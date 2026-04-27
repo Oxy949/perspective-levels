@@ -1,0 +1,83 @@
+.perspective-levels-config {
+  margin-top: 1rem;
+  border: 1px solid var(--color-border-light-tertiary, #666);
+  border-radius: 6px;
+  padding: 0.75rem;
+}
+
+.perspective-levels-config legend {
+  font-weight: 700;
+  padding: 0 0.35rem;
+}
+
+.perspective-levels-config .form-fields input[type="number"] {
+  max-width: 5.5rem;
+}
+
+.perspective-levels-anchor-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.35rem 0.75rem;
+  align-items: end;
+}
+
+.perspective-levels-anchor-grid label,
+.perspective-levels-grid-settings label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.82rem;
+}
+
+.perspective-levels-open-calibrator {
+  width: 100%;
+  margin-top: 0.5rem;
+}
+
+#perspective-levels-calibrator {
+  position: fixed;
+  right: 1rem;
+  bottom: 5rem;
+  z-index: 100000;
+  width: 320px;
+  padding: 0.75rem;
+  border: 1px solid var(--color-border-light-primary, #888);
+  border-radius: 8px;
+  background: rgba(20, 20, 20, 0.92);
+  color: #f5f5f5;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(4px);
+}
+
+#perspective-levels-calibrator header {
+  font-weight: 800;
+  margin-bottom: 0.35rem;
+}
+
+#perspective-levels-calibrator .hint {
+  margin: 0 0 0.5rem;
+  color: #d0d0d0;
+  line-height: 1.25;
+}
+
+#perspective-levels-calibrator label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin: 0.4rem 0;
+}
+
+#perspective-levels-calibrator input[type="range"] {
+  width: 100%;
+}
+
+#perspective-levels-calibrator footer {
+  display: flex;
+  gap: 0.35rem;
+  justify-content: flex-end;
+  margin-top: 0.6rem;
+}
+
+#perspective-levels-calibrator button {
+  white-space: nowrap;
+}
