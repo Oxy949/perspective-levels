@@ -16,7 +16,9 @@ import {
   pointToAnchor,
   perspectiveGridModelToScreen,
   perspectiveGridToScreen,
+  perspectiveGroundPointToElevatedScreen,
   scaleForY,
+  screenPointToElevationGroundPoint,
   screenPointToPerspectiveGrid,
   screenPointToPerspectiveGround
 } from "./projection.js";
@@ -198,6 +200,8 @@ export function getPublicApi() {
       getPerspectiveGridModel,
       perspectiveGridModelToScreen,
       perspectiveGridToScreen,
+      perspectiveGroundPointToElevatedScreen,
+      screenPointToElevationGroundPoint,
       screenPointToPerspectiveGround,
       screenPointToPerspectiveGrid
     },

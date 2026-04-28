@@ -1,7 +1,7 @@
 import { LEGACY_TOKEN_OUTLINE_NAMES, MODULE_ID } from "./constants.js";
 import { getLevelConfig } from "./config.js";
 import { getSceneRect } from "./scene.js";
-import { scaleForY, screenPointToPerspectiveGrid } from "./projection.js";
+import { scaleForY, screenPointToElevationGroundPoint, screenPointToPerspectiveGrid } from "./projection.js";
 import { clamp } from "./utils.js";
 
 const ORIGINAL_TOKEN_STATE = new WeakMap();
@@ -290,22 +290,26 @@ export function restoreTokenBaseScale(token) {
   return true;
 }
 
-export function getTokenGroundY(token) {
+function getTokenVisualBottomPoint(token) {
   const rect = getSceneRect();
+  const x = Number(token.position?.x ?? token.x ?? token.document?.x ?? 0) || 0;
   const y = Number(token.position?.y ?? token.y ?? token.document?.y ?? 0) || 0;
+  const w = Number(token.w ?? ((token.document?.width || 1) * rect.gridSize) ?? rect.gridSize) || rect.gridSize;
   const h = Number(token.h ?? ((token.document?.height || 1) * rect.gridSize) ?? rect.gridSize) || rect.gridSize;
-  return y + h;
+  return {
+    x: x + (w / 2),
+    y: y + h,
+    elevation: getTokenElevation(token)
+  };
 }
 
 export function getTokenGroundPoint(token) {
-  const rect = getSceneRect();
-  const x = Number(token.position?.x ?? token.x ?? token.document?.x ?? 0) || 0;
-  const w = Number(token.w ?? ((token.document?.width || 1) * rect.gridSize) ?? rect.gridSize) || rect.gridSize;
-  return {
-    x: x + (w / 2),
-    y: getTokenGroundY(token),
-    elevation: getTokenElevation(token)
-  };
+  const config = getLevelConfig();
+  return screenPointToElevationGroundPoint(getTokenVisualBottomPoint(token), config, getSceneRect());
+}
+
+export function getTokenGroundY(token) {
+  return getTokenGroundPoint(token).y;
 }
 
 function getTokenElevation(token) {

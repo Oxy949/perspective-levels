@@ -1,8 +1,8 @@
 import { MODULE_ID } from "./constants.js";
 import { getLevelConfig, isPerspectiveDistanceEnabled, isPerspectiveEnabled } from "./config.js";
 import { applyPerspectiveMeasurement } from "./measurement.js";
-import { perspectiveGridToScreen, screenPointToPerspectiveGrid } from "./projection.js";
-import { getSceneRect } from "./scene.js";
+import { elevationToScreenOffsetAtRow, perspectiveGridToScreen, perspectiveGroundPointToElevatedScreen, screenPointToPerspectiveGrid } from "./projection.js";
+import { getSceneGridDistance, getSceneRect } from "./scene.js";
 import { applyPerspectiveToToken, isTokenObject, schedulePerspectiveSort } from "./tokens.js";
 import { clamp } from "./utils.js";
 
@@ -10,6 +10,7 @@ import { clamp } from "./utils.js";
 const PENDING_PERSPECTIVE_UPDATES = new Set();
 let PENDING_PERSPECTIVE_RAF = null;
 const DRAG_STATE = new Map(); // tokenId -> { startX, startY, startElevation, isShiftDrag, isDragging }
+let ACTIVE_DRAG_EVENT_SHIFT = false;
 const TOKEN_ALPHA_HIT_THRESHOLD = 0.1;
 
 function addTokenLikeToSet(value, set, seen = new Set()) {
@@ -138,6 +139,109 @@ function canUpdateTokenDocument(document) {
   } catch (_err) { /* noop */ }
 
   return false;
+}
+
+function getKeyboardModifierConstants() {
+  return globalThis.foundry?.helpers?.interaction?.KeyboardManager?.MODIFIER_KEYS
+    ?? globalThis.KeyboardManager?.MODIFIER_KEYS
+    ?? {};
+}
+
+function isShiftActive(event = null) {
+  const native = event?.nativeEvent ?? event?.originalEvent ?? event?.data?.originalEvent ?? event;
+  if (native?.shiftKey === true) return true;
+
+  try {
+    const key = getKeyboardModifierConstants().SHIFT;
+    if (key && globalThis.game?.keyboard?.isModifierActive?.(key)) return true;
+  } catch (_err) { /* noop */ }
+
+  try {
+    if (globalThis.game?.keyboard?.isModifierActive?.("SHIFT")) return true;
+  } catch (_err) { /* noop */ }
+
+  try {
+    if (globalThis.keyboard?.isDown?.("Shift") || globalThis.keyboard?.isDown?.("ShiftLeft") || globalThis.keyboard?.isDown?.("ShiftRight")) return true;
+  } catch (_err) { /* noop */ }
+
+  return false;
+}
+
+function getTokenIdentity(token) {
+  return token?._original?.document?.id
+    ?? token?.document?.id
+    ?? token?._original?.id
+    ?? token?.id
+    ?? String(token);
+}
+
+function getTokenPositionForFlight(token) {
+  const source = token?._original ?? token;
+  return {
+    x: Number(token?.position?.x ?? token?.x ?? source?.position?.x ?? source?.x ?? token?.document?.x ?? source?.document?.x ?? 0) || 0,
+    y: Number(token?.position?.y ?? token?.y ?? source?.position?.y ?? source?.y ?? token?.document?.y ?? source?.document?.y ?? 0) || 0
+  };
+}
+
+function getFlightDragState(token, { event = null, create = false } = {}) {
+  const tokenId = getTokenIdentity(token);
+  if (!create || DRAG_STATE.has(tokenId)) return DRAG_STATE.get(tokenId);
+
+  const config = getLevelConfig();
+  const rect = getSceneRect();
+  const document = token?._original?.document ?? token?.document;
+  const { width, height } = getDocumentPixelSize(document, token?._original ?? token);
+  const pos = getTokenPositionForFlight(token);
+  const elevation = Number(document?.elevation ?? token?.document?.elevation ?? token?.elevation ?? 0) || 0;
+  const bottom = { x: pos.x + (width / 2), y: pos.y + height, elevation };
+  const grid = screenPointToPerspectiveGrid(bottom, config, rect);
+  const gridDistance = getSceneGridDistance();
+  const pxPerGridDistance = Math.max(1, Math.abs(elevationToScreenOffsetAtRow(gridDistance, grid.j, config, rect)) || rect.gridSize);
+
+  const state = {
+    startX: pos.x,
+    startY: pos.y,
+    startElevation: elevation,
+    startWidth: width,
+    startHeight: height,
+    pxPerGridDistance,
+    gridDistance,
+    isShiftDrag: isShiftActive(event),
+    isDragging: true,
+    lastElevation: elevation
+  };
+
+  DRAG_STATE.set(tokenId, state);
+  return state;
+}
+
+function computeFlightElevationFromY(state, y) {
+  if (!state) return 0;
+  const dy = (Number(y) || 0) - state.startY;
+  const delta = -(dy / Math.max(1, state.pxPerGridDistance)) * Math.max(0.0001, state.gridDistance);
+  let elevation = state.startElevation + delta;
+
+  // Для обычного полёта над сеткой не даём случайно уйти ниже пола, но если токен
+  // уже был на отрицательной высоте — сохраняем Foundry-совместимое поведение.
+  if (state.startElevation >= 0) elevation = Math.max(0, elevation);
+  return Math.round((elevation + Number.EPSILON) * 1000) / 1000;
+}
+
+function applyFlightElevationPreview(token, elevation) {
+  if (!token?.document) return;
+
+  try { token.document.updateSource?.({ elevation }, { _perspectiveLevelsFlightPreview: true }); }
+  catch (_err) {
+    try { token.document.elevation = elevation; }
+    catch (_innerErr) { /* noop */ }
+  }
+
+  try { token.elevation = elevation; }
+  catch (_err) { /* noop */ }
+}
+
+function deleteFlightState(token) {
+  DRAG_STATE.delete(getTokenIdentity(token));
 }
 
 
@@ -458,143 +562,119 @@ function installTokenPreviewScalingPatch() {
     return result;
   };
 
-  // Специальный обработчик для Shift+drag - Z-axis движение
+  // Shift+drag в перспективе = полёт. Токен остаётся в canvas X/Y там, куда
+  // его тянет пользователь, но вертикальная экранная дельта записывается ещё и
+  // в TokenDocument.elevation. Масштаб при этом считается от восстановленной
+  // точки на земле, поэтому размер не меняется как при ходьбе по сетке.
   const dragMoveHandler = function(original, args) {
-    const tokenId = this?.id ?? String(this);
-    const isShiftPressed = globalThis.keyboard?.isDown?.("Shift") ?? false;
-    
-    // Инициализировать состояние при первом вызове
-    if (!DRAG_STATE.has(tokenId)) {
-      DRAG_STATE.set(tokenId, {
-        startX: this.document?.x ?? this.x ?? 0,
-        startY: this.document?.y ?? this.y ?? 0,
-        startElevation: this.document?.elevation ?? this.elevation ?? 0,
-        isShiftDrag: isShiftPressed,
-        isDragging: true
-      });
-    }
+    const event = args[0];
+    const shift = isShiftActive(event);
+    let result;
 
-    const state = DRAG_STATE.get(tokenId);
-    
-    // Вызовим оригинальный метод
-    const result = original.apply(this, args);
-    
-    // Если Shift НАЖАТ - преобразуем Y-движение в Z-движение
-    if (isShiftPressed) {
+    try {
+      const config = getLevelConfig();
+      if (globalThis.canvas?.ready && isPerspectiveEnabled(config)) getFlightDragState(this, { event, create: true });
+    } catch (_err) { /* noop */ }
+
+    ACTIVE_DRAG_EVENT_SHIFT = shift;
+    try { result = original.apply(this, args); }
+    finally { ACTIVE_DRAG_EVENT_SHIFT = false; }
+
+    try {
+      const config = getLevelConfig();
+      if (!globalThis.canvas?.ready || !isPerspectiveEnabled(config)) return result;
+
+      const state = getFlightDragState(this, { event, create: true });
+      if (!shift || !state) {
+        if (state) state.isShiftDrag = false;
+        schedulePerspectiveUpdate(this);
+        return result;
+      }
+
       state.isShiftDrag = true;
-      
-      // Получим текущие позиции
-      const currentY = this.document?.y ?? this.y ?? 0;
-      const currentElevation = Number(this.document?.elevation ?? this.elevation ?? 0) || 0;
-      
-      // Вычислим дельту Y от начальной позиции
-      const yDelta = currentY - state.startY;
-      
-      // Преобразуем Y-дельту в elevation-дельту
-      const elevationDelta = yDelta * 0.5;
-      const newElevation = Math.max(0, state.startElevation + elevationDelta);
-      
-      // Сбросим Y обратно в начальную позицию и обновим elevation
-      if (Math.abs(newElevation - currentElevation) > 0.01) {
-        // Используем updateSource для немедленного обновления документа
-        if (this.document?.updateSource) {
-          this.document.updateSource({ 
-            y: state.startY,
-            elevation: newElevation
-          });
-        } else if (this.document) {
-          // Fallback: прямое обновление если updateSource не доступен
-          try {
-            this.document.y = state.startY;
-            this.document.elevation = newElevation;
-          } catch (err) {
-            console.warn(`${MODULE_ID} | Failed to update document properties`, err);
-          }
-        }
-        
-        // Обновить визуальную позицию объекта
-        if (this.position) {
-          this.position.y = state.startY;
-        }
-      }
-    } else {
-      state.isShiftDrag = false;
+      const pos = getTokenPositionForFlight(this);
+      const elevation = computeFlightElevationFromY(state, pos.y);
+      state.lastElevation = elevation;
+      applyFlightElevationPreview(this, elevation);
+      schedulePerspectiveUpdate(this);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Failed to apply perspective flight preview`, err);
     }
-    
-    schedulePerspectiveUpdate(this);
+
     return result;
   };
 
-  // Обработчик завершения drag - сохранить финальное elevation
   const dragEndHandler = function(original, args) {
-    const tokenId = this?.id ?? String(this);
-    const state = DRAG_STATE.get(tokenId);
-    
+    const state = DRAG_STATE.get(getTokenIdentity(this));
     const result = original.apply(this, args);
-    
-    // Если был Shift-drag, сохранить финальную высоту
-    if (state?.isShiftDrag && this.document) {
-      const finalElevation = Number(this.document.elevation) || 0;
-      const finalY = state.startY;
-      
-      // Сохранить на сервер только если текущий пользователь реально может обновлять TokenDocument.
-      // Обычное перемещение остаётся на core Foundry; здесь мы сохраняем только наш Shift-drag elevation.
-      if (this.document.update && canUpdateTokenDocument(this.document)) {
-        this.document.update({
-          y: finalY,
-          elevation: finalElevation
-        }, { animate: false }).catch(err =>
-          console.warn(`${MODULE_ID} | Failed to save final elevation`, err)
-        );
+
+    try {
+      const originalToken = this?._original ?? this;
+      const document = originalToken?.document ?? this.document;
+
+      if (state?.isShiftDrag && document) {
+        const elevation = Number.isFinite(Number(state.lastElevation)) ? Number(state.lastElevation) : Number(document.elevation ?? 0) || 0;
+        applyFlightElevationPreview(this, elevation);
+        if (originalToken !== this) applyFlightElevationPreview(originalToken, elevation);
+
+        if (document.update && canUpdateTokenDocument(document)) {
+          document.update({ elevation }, {
+            animate: false,
+            _perspectiveLevelsFlight: true
+          }).catch(err => console.warn(`${MODULE_ID} | Failed to save flight elevation`, err));
+        }
       }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Failed to finalize perspective flight`, err);
+    } finally {
+      deleteFlightState(this);
+      if (state?.isShiftDrag) schedulePerspectiveUpdate(this);
+      schedulePerspectiveSort({ debounce: true });
     }
-    
-    // Очистить состояние. Для обычного drag не трогаем документ и не форсим
-    // сохранение sort сразу после drop: такой update может прервать дальнюю
-    // Foundry-анимацию движения и визуально выглядит как телепорт в финале.
-    DRAG_STATE.delete(tokenId);
-    if (state?.isShiftDrag) schedulePerspectiveUpdate(this);
-    schedulePerspectiveSort({ debounce: true });
 
     return result;
   };
 
-  // Применить патчи к методам Start
   wrapPrototypeMethod(proto, "_onDragLeftStart", function(original, args) {
-    const tokenId = this?.id ?? String(this);
-    const isShift = globalThis.keyboard?.isDown?.("Shift") ?? false;
-    DRAG_STATE.set(tokenId, {
-      startX: this.document?.x ?? this.x ?? 0,
-      startY: this.document?.y ?? this.y ?? 0,
-      startElevation: this.document?.elevation ?? this.elevation ?? 0,
-      isShiftDrag: isShift,
-      isDragging: true
-    });
+    getFlightDragState(this, { event: args[0], create: true });
     return original.apply(this, args);
   });
 
   wrapPrototypeMethod(proto, "_onDragRightStart", function(original, args) {
-    const tokenId = this?.id ?? String(this);
-    const isShift = globalThis.keyboard?.isDown?.("Shift") ?? false;
-    DRAG_STATE.set(tokenId, {
-      startX: this.document?.x ?? this.x ?? 0,
-      startY: this.document?.y ?? this.y ?? 0,
-      startElevation: this.document?.elevation ?? this.elevation ?? 0,
-      isShiftDrag: isShift,
-      isDragging: true
-    });
+    getFlightDragState(this, { event: args[0], create: true });
     return original.apply(this, args);
   });
 
-  // Специально для движения
-  if (typeof proto._onDragLeftMove === "function") {
-    wrapPrototypeMethod(proto, "_onDragLeftMove", dragMoveHandler);
-  }
-  if (typeof proto._onDragRightMove === "function") {
-    wrapPrototypeMethod(proto, "_onDragRightMove", dragMoveHandler);
+  if (typeof proto._getDragWaypointPosition === "function") {
+    wrapPrototypeMethod(proto, "_getDragWaypointPosition", function(original, args) {
+      const result = original.apply(this, args);
+
+      try {
+        const config = getLevelConfig();
+        if (!globalThis.canvas?.ready || !isPerspectiveEnabled(config) || !(ACTIVE_DRAG_EVENT_SHIFT || isShiftActive())) return result;
+
+        const state = getFlightDragState(this, { create: true });
+        if (!state) return result;
+
+        const y = Number(result?.y ?? args[1]?.y ?? getTokenPositionForFlight(this).y) || 0;
+        const elevation = computeFlightElevationFromY(state, y);
+        state.isShiftDrag = true;
+        state.lastElevation = elevation;
+
+        if (result && typeof result === "object") result.elevation = elevation;
+        applyFlightElevationPreview(this, elevation);
+        schedulePerspectiveUpdate(this);
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Failed to prepare perspective flight waypoint`, err);
+      }
+
+      return result;
+    });
   }
 
-  // End drag методы
+  if (typeof proto._onDragLeftMove === "function") wrapPrototypeMethod(proto, "_onDragLeftMove", dragMoveHandler);
+  if (typeof proto._onDragRightMove === "function") wrapPrototypeMethod(proto, "_onDragRightMove", dragMoveHandler);
+
   for (const method of ["_onDragLeftDrop", "_onDragRightDrop", "_onDragLeftCancel", "_onDragRightCancel", "_onDragEnd", "_onDragLeftUp", "_onDragRightUp"]) {
     wrapPrototypeMethod(proto, method, dragEndHandler);
   }
@@ -670,7 +750,12 @@ function buildPerspectiveKeyboardMoveUpdate(object, dx, dy, config, rect) {
 
   const { width, height } = getDocumentPixelSize(document, object);
   const bottom = getDocumentBottomPoint(document, object);
-  const movedBottom = perspectiveKeyboardMovePoint(bottom, dx, dy, config, rect);
+  const movedGroundBottom = perspectiveKeyboardMovePoint(bottom, dx, dy, config, rect);
+  const movedBottom = perspectiveGroundPointToElevatedScreen({
+    x: movedGroundBottom.x,
+    y: movedGroundBottom.y,
+    elevation: bottom.elevation
+  }, config, rect);
 
   const minX = rect.x;
   const minY = rect.y;

@@ -1,5 +1,5 @@
 import { getLevelConfig } from "./config.js";
-import { getSceneRect } from "./scene.js";
+import { getSceneGridDistance, getSceneRect } from "./scene.js";
 import { clamp } from "./utils.js";
 
 export function anchorToPoint(anchor, rect = getSceneRect()) {
@@ -92,7 +92,7 @@ export function perspectiveGridToScreen(column, row, config = getLevelConfig(), 
   return perspectiveGridModelToScreen(getPerspectiveGridModel(config, rect), column, row);
 }
 
-export function screenPointToPerspectiveGrid(point, config = getLevelConfig(), rect = getSceneRect()) {
+function screenPointToPerspectiveGridRaw(point, config = getLevelConfig(), rect = getSceneRect()) {
   const p = getPointXY(point);
   const model = getPerspectiveGridModel(config, rect);
 
@@ -109,6 +109,64 @@ export function screenPointToPerspectiveGrid(point, config = getLevelConfig(), r
     j: rawT * model.rows,
     elevation: p.elevation
   };
+}
+
+export function getPerspectiveCellScreenHeightAtRow(row, config = getLevelConfig(), rect = getSceneRect()) {
+  const model = getPerspectiveGridModel(config, rect);
+  const safeRow = Number.isFinite(Number(row)) ? Number(row) : 0;
+  const p0 = perspectiveGridModelToScreen(model, model.columns / 2, safeRow);
+  const p1 = perspectiveGridModelToScreen(model, model.columns / 2, safeRow + 1);
+  const height = Math.abs(Number(p1.y) - Number(p0.y));
+  return Number.isFinite(height) && height > 0.0001 ? height : Math.max(1, rect.gridSize * 0.25);
+}
+
+export function elevationToScreenOffsetAtRow(elevation, row, config = getLevelConfig(), rect = getSceneRect()) {
+  const e = Number(elevation) || 0;
+  if (Math.abs(e) < 0.0001) return 0;
+
+  const gridDistance = Math.max(0.0001, getSceneGridDistance());
+  const gridScale = Math.max(0.1, Number(config.gridScale) || 1);
+  const spaces = e / gridDistance;
+  return spaces * gridScale * getPerspectiveCellScreenHeightAtRow(row, config, rect);
+}
+
+export function screenPointToElevationGroundPoint(point, config = getLevelConfig(), rect = getSceneRect()) {
+  const p = getPointXY(point);
+  if (Math.abs(p.elevation) < 0.0001) return p;
+
+  // Foundry v14 stores token elevation in real scene units. For perspective mode we
+  // interpret the token's canvas Y as a projected/elevated visual point and recover
+  // the ground point under it. The local pixel-per-height-unit depends on the
+  // perspective row, so solve it iteratively instead of using a constant.
+  let groundY = p.y;
+  for (let i = 0; i < 5; i++) {
+    const coords = screenPointToPerspectiveGridRaw({ x: p.x, y: groundY, elevation: 0 }, config, rect);
+    const offset = elevationToScreenOffsetAtRow(p.elevation, coords.j, config, rect);
+    const nextY = p.y + offset;
+    if (Math.abs(nextY - groundY) < 0.01) {
+      groundY = nextY;
+      break;
+    }
+    groundY = nextY;
+  }
+
+  return { x: p.x, y: groundY, elevation: p.elevation };
+}
+
+export function perspectiveGroundPointToElevatedScreen(point, config = getLevelConfig(), rect = getSceneRect()) {
+  const p = getPointXY(point);
+  if (Math.abs(p.elevation) < 0.0001) return p;
+
+  const coords = screenPointToPerspectiveGridRaw({ x: p.x, y: p.y, elevation: 0 }, config, rect);
+  const offset = elevationToScreenOffsetAtRow(p.elevation, coords.j, config, rect);
+  return { x: p.x, y: p.y - offset, elevation: p.elevation };
+}
+
+export function screenPointToPerspectiveGrid(point, config = getLevelConfig(), rect = getSceneRect()) {
+  const p = screenPointToElevationGroundPoint(point, config, rect);
+  const coords = screenPointToPerspectiveGridRaw(p, config, rect);
+  coords.elevation = p.elevation;
+  return coords;
 }
 
 export function screenPointToPerspectiveGround(point, config = getLevelConfig(), rect = getSceneRect()) {
