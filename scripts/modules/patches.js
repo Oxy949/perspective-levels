@@ -1,7 +1,10 @@
 import { MODULE_ID } from "./constants.js";
 import { getLevelConfig, isPerspectiveDistanceEnabled, isPerspectiveEnabled } from "./config.js";
 import { applyPerspectiveMeasurement } from "./measurement.js";
+import { perspectiveGridToScreen, screenPointToPerspectiveGrid } from "./projection.js";
+import { getSceneRect } from "./scene.js";
 import { applyPerspectiveToToken, isTokenObject, schedulePerspectiveSort } from "./tokens.js";
+import { clamp } from "./utils.js";
 
 // Состояние для обработки масштабирования и Z-axis движения
 const PENDING_PERSPECTIVE_UPDATES = new Set();
@@ -138,7 +141,7 @@ function canUpdateTokenDocument(document) {
 }
 
 
-let PERSPECTIVE_LEVELS_OUTLINE_FILTER_DISABLED = false;
+let PerspectiveLevelsMteOutlineFilterClass = null;
 let PERSPECTIVE_LEVELS_OUTLINE_FILTER_WARNED = false;
 
 function normalizeColorInt(value, fallback = 0xffffff) {
@@ -160,6 +163,14 @@ function intColorToRgb(color) {
   return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
 }
 
+function normalizeRgbArray(value, fallback = [1, 1, 1]) {
+  if (!Array.isArray(value) || value.length < 3) return fallback;
+  return value.slice(0, 3).map(component => {
+    const n = Number(component);
+    return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 1;
+  });
+}
+
 function getTokenBorderColorRgb(token) {
   let value = null;
 
@@ -171,51 +182,154 @@ function getTokenBorderColorRgb(token) {
   try {
     const ColorClass = globalThis.Color ?? globalThis.foundry?.utils?.Color;
     const color = ColorClass?.from?.(value);
-    if (Array.isArray(color?.rgb) && color.rgb.length >= 3) return color.rgb;
+    if (Array.isArray(color?.rgb) && color.rgb.length >= 3) return normalizeRgbArray(color.rgb);
   } catch (_err) { /* noop */ }
 
-  if (Array.isArray(value) && value.length >= 3) {
-    return value.slice(0, 3).map(n => Math.max(0, Math.min(1, Number(n))));
-  }
+  if (Array.isArray(value) && value.length >= 3) return normalizeRgbArray(value);
   return intColorToRgb(value);
 }
 
-function getOutlineOverlayFilterClass() {
-  return globalThis.foundry?.canvas?.rendering?.filters?.OutlineOverlayFilter
-    ?? globalThis.OutlineOverlayFilter
-    ?? null;
+function getOutlineQualityStep() {
+  switch (globalThis.canvas?.performance?.mode) {
+    case globalThis.CONST?.CANVAS_PERFORMANCE_MODES?.LOW:
+      return (Math.PI * 2) / 10;
+    case globalThis.CONST?.CANVAS_PERFORMANCE_MODES?.MED:
+      return (Math.PI * 2) / 20;
+    default:
+      return (Math.PI * 2) / 30;
+  }
 }
 
-function createPerspectiveLevelsOutlineFilter(outlineColor) {
-  if (PERSPECTIVE_LEVELS_OUTLINE_FILTER_DISABLED) return null;
+function getPerspectiveLevelsMteOutlineFilterClass() {
+  if (PerspectiveLevelsMteOutlineFilterClass) return PerspectiveLevelsMteOutlineFilterClass;
 
-  const OutlineOverlayFilter = getOutlineOverlayFilterClass();
-  if (!OutlineOverlayFilter?.create) return null;
+  const AbstractBaseFilter = globalThis.foundry?.canvas?.rendering?.filters?.AbstractBaseFilter;
+  if (!AbstractBaseFilter) return null;
 
+  const quality = getOutlineQualityStep().toFixed(7);
+
+  // Логика шейдера взята из multi-token-edit Scenescape: считать альфу вокруг PNG
+  // и рисовать outline, не knockout'я исходный mesh. Важно: НЕ наследуемся от
+  // OutlineOverlayFilter — в Foundry 13/14 он может превращать арт в один контур
+  // даже с knockout:false, а subclass может падать на private-полях.
+  class PerspectiveLevelsMteOutlineFilter extends AbstractBaseFilter {
+    static defaultUniforms = {
+      outlineColor: [1, 1, 1, 1],
+      thickness: [0.004, 0.004],
+      alphaThreshold: 0.5
+    };
+
+    static fragmentShader = `
+      precision mediump float;
+      varying vec2 vTextureCoord;
+      uniform sampler2D uSampler;
+      uniform vec2 thickness;
+      uniform vec4 outlineColor;
+      uniform float alphaThreshold;
+
+      #define TWOPI 6.28318530718
+
+      void main(void) {
+        vec4 ownColor = texture2D(uSampler, vTextureCoord);
+        float texAlpha = smoothstep(alphaThreshold, 1.0, ownColor.a);
+        vec4 curColor;
+        float maxAlpha = 0.0;
+        vec2 displaced;
+
+        for (float angle = 0.0; angle <= TWOPI; angle += ${quality}) {
+          displaced.x = vTextureCoord.x + thickness.x * cos(angle);
+          displaced.y = vTextureCoord.y + thickness.y * sin(angle);
+          curColor = texture2D(uSampler, clamp(displaced, vec2(0.0), vec2(1.0)));
+
+          // Важно: как в multi-token-edit, прозрачный фон отсекается высоким
+          // порогом. Иначе Foundry/PIXI может дать слабую альфу на всём
+          // прямоугольнике текстуры, и фильтр превращается в жёлтый квадрат.
+          curColor.a = clamp((curColor.a - 0.6) * 2.5, 0.0, 1.0);
+          maxAlpha = max(maxAlpha, curColor.a);
+        }
+
+        float resultAlpha = max(maxAlpha, texAlpha);
+        gl_FragColor = vec4((ownColor.rgb + outlineColor.rgb * (1.0 - ownColor.a)) * resultAlpha, resultAlpha);
+      }
+    `;
+
+    constructor(...args) {
+      super(...args);
+      this.padding = 8;
+      this.autoFit = false;
+      this.animated = false;
+      this._perspectiveLevelsThicknessPixels = 4;
+    }
+
+    apply(filterManager, input, output, clear, currentState) {
+      this._updatePerspectiveLevelsThickness(input, currentState);
+      return super.apply(filterManager, input, output, clear, currentState);
+    }
+
+    _updatePerspectiveLevelsThickness(input, currentState) {
+      const frame = input?.sourceFrame ?? currentState?.sourceFrame ?? input?.filterFrame ?? input?.frame;
+      const width = Math.max(1, Number(frame?.width ?? input?.width ?? 1) || 1);
+      const height = Math.max(1, Number(frame?.height ?? input?.height ?? 1) || 1);
+      const px = Math.max(1, Number(this._perspectiveLevelsThicknessPixels) || 4);
+
+      const thickness = this.uniforms?.thickness;
+      if (Array.isArray(thickness) || ArrayBuffer.isView(thickness)) {
+        thickness[0] = px / width;
+        thickness[1] = px / height;
+      } else if (this.uniforms) {
+        this.uniforms.thickness = [px / width, px / height];
+      }
+    }
+  }
+
+  PerspectiveLevelsMteOutlineFilterClass = PerspectiveLevelsMteOutlineFilter;
+  return PerspectiveLevelsMteOutlineFilterClass;
+}
+
+function createPerspectiveLevelsMteOutlineFilter(outlineColor) {
+  const OutlineFilter = getPerspectiveLevelsMteOutlineFilterClass();
+  if (!OutlineFilter) return null;
+
+  const color = normalizeRgbArray(outlineColor);
   try {
-    // Важно: не наследуемся от OutlineOverlayFilter. В Foundry v14 фабрика create()
-    // использует приватные static-поля/методы базового класса, поэтому вызов create()
-    // на subclass может падать с "object is not the right class". На v14 штатный
-    // knockout:false оставляет сам mesh видимым, что даёт тот же результат,
-    // ради которого MTE в старых версиях переопределял shader.
-    const filter = OutlineOverlayFilter.create({
-      outlineColor,
-      knockout: false,
-      wave: false,
-      animated: false
-    });
+    const filter = OutlineFilter.create({ outlineColor: [...color, 1] });
     filter.ssOutline = true;
     filter.animated = false;
     filter._perspectiveLevelsMteOutline = true;
+    filter._perspectiveLevelsThicknessPixels = 4;
+    filter.padding = 8;
+    filter.autoFit = false;
     return filter;
   } catch (err) {
-    PERSPECTIVE_LEVELS_OUTLINE_FILTER_DISABLED = true;
     if (!PERSPECTIVE_LEVELS_OUTLINE_FILTER_WARNED) {
       PERSPECTIVE_LEVELS_OUTLINE_FILTER_WARNED = true;
-      console.warn(MODULE_ID + " | Token outline filter is unavailable in this Foundry build", err);
+      console.warn(`${MODULE_ID} | MTE-style token outline filter is unavailable in this Foundry build`, err);
     }
     return null;
   }
+}
+
+function updatePerspectiveLevelsMteOutlineFilter(filter, outlineColor) {
+  if (!filter) return;
+  const color = normalizeRgbArray(outlineColor);
+  const value = [...color, 1];
+
+  try {
+    const current = filter.uniforms?.outlineColor;
+    if (Array.isArray(current) || ArrayBuffer.isView(current)) {
+      current[0] = value[0];
+      current[1] = value[1];
+      current[2] = value[2];
+      current[3] = value[3];
+    } else if (filter.uniforms) {
+      filter.uniforms.outlineColor = value;
+    }
+  } catch (_err) { /* noop */ }
+
+  filter._perspectiveLevelsThicknessPixels = 4;
+  filter.padding = 8;
+  filter.autoFit = false;
+  filter.animated = false;
 }
 
 function removePerspectiveLevelsMteOutline(mesh) {
@@ -243,8 +357,8 @@ function installTokenMteOutlinePatch() {
         return result;
       }
 
-      // Как в multi-token-edit Scenescape: обычная прямоугольная рамка Foundry выключается,
-      // а вместо неё на mesh ставится outline filter.
+      // Как в multi-token-edit Scenescape: обычная квадратная рамка Foundry выключается,
+      // а вместо неё на mesh ставится outline filter по альфе токена.
       if (this.border) this.border.visible = false;
 
       if (this.document?.isSecret || !this.controlled) {
@@ -257,18 +371,15 @@ function installTokenMteOutlinePatch() {
       let filters = Array.isArray(mesh.filters) ? mesh.filters : [];
       let outlineFilter = filters.find(filter => filter?._perspectiveLevelsMteOutline);
 
-      if (outlineFilter?._perspectiveLevelsColorKey !== colorKey) {
-        filters = filters.filter(filter => !filter?._perspectiveLevelsMteOutline);
-        outlineFilter = null;
-      }
-
       if (!outlineFilter) {
-        outlineFilter = createPerspectiveLevelsOutlineFilter(outlineColor);
+        outlineFilter = createPerspectiveLevelsMteOutlineFilter(outlineColor);
         if (!outlineFilter) return result;
-        outlineFilter._perspectiveLevelsColorKey = colorKey;
         filters.push(outlineFilter);
         mesh.filters = filters;
       }
+
+      outlineFilter._perspectiveLevelsColorKey = colorKey;
+      updatePerspectiveLevelsMteOutlineFilter(outlineFilter, outlineColor);
     } catch (err) {
       console.warn(`${MODULE_ID} | Failed to apply MTE-style token outline`, err);
     }
@@ -438,11 +549,13 @@ function installTokenPreviewScalingPatch() {
       }
     }
     
-    // Очистить состояние
+    // Очистить состояние. Для обычного drag не трогаем документ и не форсим
+    // сохранение sort сразу после drop: такой update может прервать дальнюю
+    // Foundry-анимацию движения и визуально выглядит как телепорт в финале.
     DRAG_STATE.delete(tokenId);
-    schedulePerspectiveUpdate(this);
-    schedulePerspectiveSort({ persist: true, debounce: true });
-    
+    if (state?.isShiftDrag) schedulePerspectiveUpdate(this);
+    schedulePerspectiveSort({ debounce: true });
+
     return result;
   };
 
@@ -511,6 +624,131 @@ function installTokenPreviewScalingPatch() {
   return true;
 }
 
+
+function getKeyboardIncrementScale() {
+  try {
+    const key = globalThis.foundry?.helpers?.interaction?.KeyboardManager?.MODIFIER_KEYS?.SHIFT;
+    if (key && globalThis.game?.keyboard?.isModifierActive?.(key)) return 0.5;
+  } catch (_err) { /* noop */ }
+
+  try {
+    if (globalThis.keyboard?.isDown?.("Shift")) return 0.5;
+  } catch (_err) { /* noop */ }
+
+  return 1;
+}
+
+function getDocumentPixelSize(document, object) {
+  const rect = getSceneRect();
+  const width = Number(object?.w ?? object?.width ?? ((document?.width || 1) * rect.gridSize)) || rect.gridSize;
+  const height = Number(object?.h ?? object?.height ?? ((document?.height || 1) * rect.gridSize)) || rect.gridSize;
+  return { width, height };
+}
+
+function getDocumentBottomPoint(document, object) {
+  const { width, height } = getDocumentPixelSize(document, object);
+  const x = Number(object?.position?.x ?? object?.x ?? document?.x ?? 0) || 0;
+  const y = Number(object?.position?.y ?? object?.y ?? document?.y ?? 0) || 0;
+  const elevation = Number(document?.elevation ?? object?.elevation ?? 0) || 0;
+  return { x: x + (width / 2), y: y + height, elevation };
+}
+
+function perspectiveKeyboardMovePoint(bottom, dx, dy, config, rect) {
+  const coords = screenPointToPerspectiveGrid(bottom, config, rect);
+  const gridScale = Math.max(0.1, Number(config.gridScale) || 1);
+  return perspectiveGridToScreen(
+    coords.i + (dx * gridScale),
+    coords.j + (dy * gridScale),
+    config,
+    rect
+  );
+}
+
+function buildPerspectiveKeyboardMoveUpdate(object, dx, dy, config, rect) {
+  const document = object?.document;
+  if (!document?.id) return null;
+
+  const { width, height } = getDocumentPixelSize(document, object);
+  const bottom = getDocumentBottomPoint(document, object);
+  const movedBottom = perspectiveKeyboardMovePoint(bottom, dx, dy, config, rect);
+
+  const minX = rect.x;
+  const minY = rect.y;
+  const maxX = rect.x + rect.width - width;
+  const maxY = rect.y + rect.height - height;
+
+  return {
+    _id: document.id,
+    x: Math.round(clamp(movedBottom.x - (width / 2), minX, maxX)),
+    y: Math.round(clamp(movedBottom.y - height, minY, maxY))
+  };
+}
+
+function installPerspectiveTokenLayerMovementPatch() {
+  const TokenLayerClass = globalThis.foundry?.canvas?.layers?.TokenLayer ?? globalThis.TokenLayer;
+  const proto = TokenLayerClass?.prototype;
+  if (!proto || proto._perspectiveLevelsMoveManyPatch || typeof proto.moveMany !== "function") return false;
+  proto._perspectiveLevelsMoveManyPatch = true;
+
+  wrapPrototypeMethod(proto, "moveMany", async function(original, args) {
+    const [options = {}] = args;
+    const dx = Number(options?.dx ?? 0) || 0;
+    const dy = Number(options?.dy ?? 0) || 0;
+
+    try {
+      const config = getLevelConfig();
+      if (!globalThis.canvas?.ready || !isPerspectiveEnabled(config) || (dx === 0 && dy === 0) || options?.rotate) {
+        return original.apply(this, args);
+      }
+
+      const objects = typeof this._getMovableObjects === "function"
+        ? this._getMovableObjects(options?.ids, options?.includeLocked)
+        : (Array.isArray(options?.ids) && options.ids.length
+          ? (this.placeables ?? []).filter(object => options.ids.includes(object?.id ?? object?.document?.id))
+          : (this.controlled ?? []));
+
+      if (!objects?.length) return [];
+      this.hud?.clear?.();
+
+      const rect = getSceneRect();
+      const incrementScale = getKeyboardIncrementScale();
+      const updates = [];
+
+      for (const object of objects) {
+        if (!object || object.destroyed || object.document?.locked) continue;
+        if (typeof object._canDrag === "function" && !object._canDrag(globalThis.game?.user, null)) continue;
+        const update = buildPerspectiveKeyboardMoveUpdate(object, dx * incrementScale, dy * incrementScale, config, rect);
+        if (update) updates.push(update);
+      }
+
+      if (!updates.length) return [];
+
+      const scene = globalThis.canvas?.scene;
+      if (scene?.updateEmbeddedDocuments) {
+        await scene.updateEmbeddedDocuments("Token", updates, {
+          animate: true,
+          _perspectiveLevelsKeyboardMove: true
+        });
+      } else {
+        await Promise.all(updates.map(update => {
+          const object = objects.find(candidate => candidate?.document?.id === update._id);
+          return object?.document?.update?.(update, { animate: true, _perspectiveLevelsKeyboardMove: true });
+        }));
+      }
+
+      for (const object of objects) schedulePerspectiveUpdate(object);
+      schedulePerspectiveSort({ debounce: true });
+      return objects;
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Failed to apply perspective keyboard movement`, err);
+      return original.apply(this, args);
+    }
+  });
+
+  console.log(`${MODULE_ID} | Perspective keyboard movement patch installed`);
+  return true;
+}
+
 function installPerspectiveMeasurementPatch() {
   const proto = globalThis.foundry?.grid?.BaseGrid?.prototype;
   if (!proto || proto._perspectiveLevelsMeasurementPatch) return false;
@@ -539,6 +777,7 @@ export function installRuntimePatches() {
   installTokenMteOutlinePatch();
   installTokenPreviewScalingPatch();
   installTokenPixelPerfectShapePatch();
+  installPerspectiveTokenLayerMovementPatch();
   installPerspectiveMeasurementPatch();
 }
 

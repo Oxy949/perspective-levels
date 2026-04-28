@@ -102,7 +102,7 @@ export function registerHooks() {
       const config = getLevelConfig();
       if (isPerspectiveEnabled(config)) {
         applyPerspectiveToToken(token.object);
-        schedulePerspectiveSort({ persist: true, debounce: true });
+        schedulePerspectiveSort({ debounce: true });
       }
     } catch (err) {
       console.warn(`${MODULE_ID} | Failed to apply perspective to new token`, err);
@@ -115,9 +115,20 @@ export function registerHooks() {
 
       const config = getLevelConfig();
       if (isPerspectiveEnabled(config)) {
+        const positionChanged = changes.x !== undefined || changes.y !== undefined || changes.elevation !== undefined || changes.level !== undefined;
+
+        // При обычном drag Foundry сама ведёт анимацию движения. Если сразу после
+        // updateToken насильно пересчитать mesh scale/sort по финальным координатам,
+        // дальний drag может визуально оборваться телепортом. Поэтому для
+        // анимируемого перемещения ждём moveToken/recordToken/stopToken.
+        if (positionChanged && options?.animate !== false && !options?._perspectiveLevelsKeyboardMove) {
+          schedulePerspectiveSort({ debounce: true });
+          return;
+        }
+
         applyPerspectiveToToken(token.object);
-        if (changes.x !== undefined || changes.y !== undefined || changes.elevation !== undefined || changes.level !== undefined) {
-          schedulePerspectiveSort({ persist: true, debounce: true });
+        if (positionChanged) {
+          schedulePerspectiveSort({ debounce: true });
         }
       }
     } catch (err) {
@@ -146,7 +157,7 @@ export function registerHooks() {
 
   hooks.on("moveToken", () => { refreshTokens(); schedulePerspectiveSort(); });
   hooks.on("recordToken", () => { refreshTokens(); schedulePerspectiveSort(); });
-  hooks.on("stopToken", () => { refreshTokens(); schedulePerspectiveSort({ persist: true, debounce: true }); });
+  hooks.on("stopToken", () => { refreshTokens(); schedulePerspectiveSort({ debounce: true }); });
 
   hooks.on("updateDocument", (document, changes) => {
     const canvasRef = globalThis.canvas;
