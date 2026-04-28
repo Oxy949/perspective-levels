@@ -23,11 +23,13 @@ import {
 import { installRuntimePatches } from "./patches.js";
 import {
   applyPerspectiveToToken,
+  clearPerspectiveSortState,
   clearTokenScaleState,
   forEachToken,
   isTokenObject,
   refreshTokens,
-  removePerspectiveFromToken
+  removePerspectiveFromToken,
+  schedulePerspectiveSort
 } from "./tokens.js";
 
 export const gridOverlay = new PerspectiveGridOverlay();
@@ -44,6 +46,7 @@ export function refreshAll() {
   gridOverlay.draw();
   if (calibrator.active) calibrator.redraw();
   refreshTokens();
+  schedulePerspectiveSort();
 }
 
 function injectLevelConfigWithRuntime(app, html) {
@@ -99,17 +102,23 @@ export function registerHooks() {
       const config = getLevelConfig();
       if (isPerspectiveEnabled(config)) {
         applyPerspectiveToToken(token.object);
+        schedulePerspectiveSort({ persist: true, debounce: true });
       }
     } catch (err) {
       console.warn(`${MODULE_ID} | Failed to apply perspective to new token`, err);
     }
   });
 
-  hooks.on("updateToken", (token) => {
+  hooks.on("updateToken", (token, changes = {}, options = {}) => {
     try {
+      if (options?._perspectiveLevelsSort && Object.keys(changes ?? {}).every(key => key === "sort" || key === "_id")) return;
+
       const config = getLevelConfig();
       if (isPerspectiveEnabled(config)) {
         applyPerspectiveToToken(token.object);
+        if (changes.x !== undefined || changes.y !== undefined || changes.elevation !== undefined || changes.level !== undefined) {
+          schedulePerspectiveSort({ persist: true, debounce: true });
+        }
       }
     } catch (err) {
       console.warn(`${MODULE_ID} | Failed to apply perspective to updated token`, err);
@@ -122,6 +131,7 @@ export function registerHooks() {
     gridOverlay.destroy();
     forEachToken(removePerspectiveFromToken);
     clearTokenScaleState();
+    clearPerspectiveSortState();
   });
 
   hooks.on("drawObject", object => {
@@ -134,9 +144,9 @@ export function registerHooks() {
     if (isTokenObject(object)) removePerspectiveFromToken(object);
   });
 
-  hooks.on("moveToken", () => refreshTokens());
-  hooks.on("recordToken", () => refreshTokens());
-  hooks.on("stopToken", () => refreshTokens());
+  hooks.on("moveToken", () => { refreshTokens(); schedulePerspectiveSort(); });
+  hooks.on("recordToken", () => { refreshTokens(); schedulePerspectiveSort(); });
+  hooks.on("stopToken", () => { refreshTokens(); schedulePerspectiveSort({ persist: true, debounce: true }); });
 
   hooks.on("updateDocument", (document, changes) => {
     const canvasRef = globalThis.canvas;

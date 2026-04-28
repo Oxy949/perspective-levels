@@ -18,10 +18,58 @@ export class PerspectiveGridOverlay {
 
   getParent() {
     const canvasRef = globalThis.canvas;
-    for (const parent of [canvasRef?.grid, canvasRef?.primary, canvasRef?.interface, canvasRef?.stage]) {
+
+    // Scene Levels v14 рисует фон/foreground активного уровня в primary/effects
+    // выше обычного grid/token-layer контейнера. Чтобы сетка гарантированно не
+    // пряталась под фоном уровня, держим её в InterfaceCanvasGroup: этот group
+    // отрисовывается поверх primary/effects, но контейнер ставим самым нижним
+    // ребёнком interface, чтобы он не перекрывал HUD, контролы и drag-helpers.
+    for (const parent of [canvasRef?.interface, canvasRef?.rendered, canvasRef?.stage]) {
       if (parent && typeof parent.addChild === "function") return parent;
     }
     return null;
+  }
+
+  configureDepth(parent) {
+    if (!this.container) return;
+
+    // Внутри interface overlay должен быть самым нижним слоем, но весь
+    // InterfaceCanvasGroup всё равно находится выше фона/тайлов уровня.
+    this.container.zIndex = -1_000_000;
+    this.container.sort = this.container.zIndex;
+
+    try { parent.sortableChildren = true; } catch (_err) { /* noop */ }
+    try { parent.sortDirty = true; } catch (_err) { /* noop */ }
+  }
+
+  attachToParent(parent) {
+    if (!this.container) return;
+
+    if (this.container.parent !== parent) {
+      this.container.parent?.removeChild?.(this.container);
+      if (typeof parent.addChildAt === "function") {
+        try { parent.addChildAt(this.container, 0); }
+        catch (_err) { parent.addChild(this.container); }
+      } else {
+        parent.addChild(this.container);
+      }
+      this.parent = parent;
+    }
+
+    // Foundry/Levels может пересобрать children interface group после смены
+    // уровня или режима инструмента. Возвращаем сетку в самый низ interface,
+    // чтобы она была выше сцены, но ниже интерфейсных контролов.
+    if (this.container.parent === parent && typeof parent.getChildIndex === "function" && typeof parent.addChildAt === "function") {
+      try {
+        const index = parent.getChildIndex(this.container);
+        if (index > 0) {
+          parent.removeChild(this.container);
+          parent.addChildAt(this.container, 0);
+        }
+      } catch (_err) { /* noop */ }
+    }
+
+    this.configureDepth(parent);
   }
 
   ensure() {
@@ -34,20 +82,20 @@ export class PerspectiveGridOverlay {
       this.container = new PIXI.Container();
       this.container.name = "PerspectiveLevels.GridOverlay";
       this.container.eventMode = "none";
-      this.container.zIndex = 1000;
+      this.container.interactive = false;
+      this.container.interactiveChildren = false;
+      this.container.cullable = false;
 
       this.grid = new PIXI.Graphics();
       this.grid.name = "PerspectiveLevels.Grid";
       this.grid.eventMode = "none";
+      this.grid.interactive = false;
+      this.grid.interactiveChildren = false;
+      this.grid.cullable = false;
       this.container.addChild(this.grid);
     }
 
-    if (this.container.parent !== parent) {
-      this.container.parent?.removeChild?.(this.container);
-      parent.addChild(this.container);
-      parent.sortableChildren = true;
-      this.parent = parent;
-    }
+    this.attachToParent(parent);
 
     this.container.position.set(0, 0);
     this.container.scale.set(1, 1);
@@ -87,6 +135,10 @@ export class PerspectiveGridOverlay {
     this.container.visible = Boolean(config.enabled && config.grid);
     this.grid.clear();
     if (!this.container.visible) return;
+
+    // Если другой модуль/Foundry переставил interface children уже после ensure,
+    // перед самой отрисовкой ещё раз поднимаем overlay над сценой.
+    if (this.parent) this.attachToParent(this.parent);
 
     const rect = getSceneRect();
     const lineStyle = {

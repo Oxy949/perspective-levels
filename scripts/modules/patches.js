@@ -1,7 +1,7 @@
 import { MODULE_ID } from "./constants.js";
 import { getLevelConfig, isPerspectiveDistanceEnabled, isPerspectiveEnabled } from "./config.js";
 import { applyPerspectiveMeasurement } from "./measurement.js";
-import { applyPerspectiveToToken, isTokenObject } from "./tokens.js";
+import { applyPerspectiveToToken, isTokenObject, schedulePerspectiveSort } from "./tokens.js";
 
 // Состояние для обработки масштабирования и Z-axis движения
 const PENDING_PERSPECTIVE_UPDATES = new Set();
@@ -86,6 +86,8 @@ function flushPerspectiveUpdates() {
       console.warn(`${MODULE_ID} | Failed to update perspective`, err);
     }
   }
+
+  schedulePerspectiveSort();
 }
 
 function schedulePerspectiveUpdate(token) {
@@ -123,9 +125,7 @@ function installTokenPreviewScalingPatch() {
     const result = original.apply(this, args);
     try {
       const config = getLevelConfig();
-      if (isPerspectiveEnabled(config)) {
-        applyPerspectiveToToken(this);
-      }
+      if (isPerspectiveEnabled(config)) schedulePerspectiveUpdate(this);
     } catch (err) {
       console.warn(`${MODULE_ID} | Failed to initialize token perspective`, err);
     }
@@ -235,6 +235,7 @@ function installTokenPreviewScalingPatch() {
     // Очистить состояние
     DRAG_STATE.delete(tokenId);
     schedulePerspectiveUpdate(this);
+    schedulePerspectiveSort({ persist: true, debounce: true });
     
     return result;
   };

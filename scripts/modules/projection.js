@@ -53,7 +53,7 @@ export function getPerspectiveGridModel(config = getLevelConfig(), rect = getSce
   const near = anchorToPoint(config.near, rect);
   const span = near.y - far.y;
   const safeSpan = Math.abs(span) < 1 ? (span < 0 ? -1 : 1) : span;
-  const rows = Math.max(1, Math.ceil(Math.abs(safeSpan) / cellSize));
+  const rows = Math.max(1, Math.round(clamp(config.sceneDepthCells ?? 12, 1, 200)));
 
   const minimumColumns = 4;
   const columns = Math.max(minimumColumns, Math.ceil((rect.width * 1.1) / cellSize));

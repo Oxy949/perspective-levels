@@ -1,15 +1,14 @@
 {
   "PERSPECTIVE_LEVELS.Title": "Перспектива уровня",
   "PERSPECTIVE_LEVELS.Enable": "Использовать перспективу на этом уровне",
-  "PERSPECTIVE_LEVELS.Grid": "Рисовать перспективную сетку",
-  "PERSPECTIVE_LEVELS.TokenScaling": "Скейлить токены по перспективе",
+  "PERSPECTIVE_LEVELS.Grid": "Показывать перспективную сетку",
+  "PERSPECTIVE_LEVELS.TokenScaling": "Масштабировать токены",
+  "PERSPECTIVE_LEVELS.Distance": "Считать дистанции по перспективной сетке",
   "PERSPECTIVE_LEVELS.OpenCalibrator": "Открыть калибровку якорей",
   "PERSPECTIVE_LEVELS.Calibrator": "Калибровка перспективы",
-  "PERSPECTIVE_LEVELS.Save": "Сохранить на уровень",
-  "PERSPECTIVE_LEVELS.Close": "Закрыть",
-  "PERSPECTIVE_LEVELS.Reset": "Сброс",
   "PERSPECTIVE_LEVELS.FarAnchor": "Дальний якорь",
   "PERSPECTIVE_LEVELS.NearAnchor": "Ближний якорь",
-  "PERSPECTIVE_LEVELS.Distance": "Считать дистанции по перспективной сетке",
-  "PERSPECTIVE_LEVELS.GridScale": "Масштаб клетки перспективной сетки"
+  "PERSPECTIVE_LEVELS.Save": "Сохранить на уровень",
+  "PERSPECTIVE_LEVELS.Reset": "Сбросить",
+  "PERSPECTIVE_LEVELS.Close": "Закрыть"
 }

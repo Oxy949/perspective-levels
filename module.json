@@ -1,8 +1,8 @@
 {
   "id": "perspective-levels",
   "title": "Perspective Levels",
-  "description": "Per-Level perspective grid with configurable cell scale, live drag token scaling, and grid-cell based perspective distance measurement for Foundry VTT v14 Scene Levels.",
-  "version": "0.2.0",
+  "description": "Per-Level perspective grid with configurable scene depth, token scale, live token scaling, depth sorting, interface-layer grid overlay, and grid-cell based perspective distance measurement for Foundry VTT v14 Scene Levels.",
+  "version": "0.2.10",
   "authors": [
     {
       "name": "Konstantin + ChatGPT"

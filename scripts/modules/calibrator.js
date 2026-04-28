@@ -117,8 +117,8 @@ export class PerspectiveCalibrator {
 
     const point = event.getLocalPosition(this.container.parent);
     const normalized = pointToAnchor(point, getSceneRect());
-    this.config[this.dragging].x = normalized.x;
-    this.config[this.dragging].y = normalized.y;
+    this.config[this.dragging].x = Number(normalized.x.toFixed(4));
+    this.config[this.dragging].y = Number(normalized.y.toFixed(4));
     this.redraw();
     this.refresh();
   }
@@ -141,6 +141,8 @@ export class PerspectiveCalibrator {
       <label>${i18n("PERSPECTIVE_LEVELS.NearAnchor")} scale <input type="range" data-pl-scale="near" min="0.05" max="3.5" step="0.01"></label>
       <label>Кривизна сетки <input type="range" data-pl-curve min="0.4" max="4" step="0.01"></label>
       <label>Масштаб клетки сетки <input type="range" data-pl-grid-scale min="0.1" max="4" step="0.05"></label>
+      <label>Глубина сцены, клеток <input type="range" data-pl-scene-depth min="1" max="80" step="1"></label>
+      <label>Множитель размера токенов <input type="range" data-pl-token-scale min="0.05" max="4" step="0.05"></label>
       <footer>
         <button type="button" data-pl-action="save"><i class="fa-solid fa-floppy-disk"></i> ${i18n("PERSPECTIVE_LEVELS.Save")}</button>
         <button type="button" data-pl-action="reset">${i18n("PERSPECTIVE_LEVELS.Reset")}</button>
@@ -168,6 +170,16 @@ export class PerspectiveCalibrator {
       this.redraw();
       this.refresh();
     });
+    div.querySelector("input[data-pl-scene-depth]")?.addEventListener("input", event => {
+      this.config.sceneDepthCells = Math.round(clamp(event.currentTarget.value, 1, 200));
+      this.redraw();
+      this.refresh();
+    });
+    div.querySelector("input[data-pl-token-scale]")?.addEventListener("input", event => {
+      this.config.tokenScaleMultiplier = clamp(event.currentTarget.value, 0.05, 8);
+      this.redraw();
+      this.refresh();
+    });
     div.querySelector("[data-pl-action='save']")?.addEventListener("click", () => this.save());
     div.querySelector("[data-pl-action='reset']")?.addEventListener("click", () => this.reset());
     div.querySelector("[data-pl-action='close']")?.addEventListener("click", () => this.close());
@@ -182,10 +194,14 @@ export class PerspectiveCalibrator {
     const near = this.panel.querySelector("input[data-pl-scale='near']");
     const curve = this.panel.querySelector("input[data-pl-curve]");
     const gridScale = this.panel.querySelector("input[data-pl-grid-scale]");
+    const sceneDepth = this.panel.querySelector("input[data-pl-scene-depth]");
+    const tokenScale = this.panel.querySelector("input[data-pl-token-scale]");
     if (far) far.value = this.config.far.scale;
     if (near) near.value = this.config.near.scale;
     if (curve) curve.value = this.config.curve;
     if (gridScale) gridScale.value = this.config.gridScale;
+    if (sceneDepth) sceneDepth.value = this.config.sceneDepthCells;
+    if (tokenScale) tokenScale.value = this.config.tokenScaleMultiplier;
   }
 
   redraw() {

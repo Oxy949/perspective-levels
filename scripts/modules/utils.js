@@ -9,6 +9,7 @@ export function clamp(value, min, max) {
 }
 
 export function asBool(value) {
+  if (Array.isArray(value)) return value.length ? asBool(value[value.length - 1]) : false;
   if (value === true || value === "true" || value === 1 || value === "1") return true;
   if (value === false || value === "false" || value === 0 || value === "0") return false;
   return Boolean(value);

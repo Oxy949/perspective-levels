@@ -19,6 +19,13 @@ function mergeConfig(base, config) {
   };
 }
 
+function roundNumber(value, digits = 4) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return value;
+  const factor = 10 ** digits;
+  return Math.round((number + Number.EPSILON) * factor) / factor;
+}
+
 export function normalizeConfig(config = {}) {
   const base = cloneDefaultConfig();
   const merged = mergeConfig(base, config ?? {});
@@ -33,19 +40,21 @@ export function normalizeConfig(config = {}) {
   delete merged.outlineWidth;
 
   merged.gridColor = String(merged.gridColor || DEFAULT_CONFIG.gridColor);
-  merged.gridAlpha = clamp(merged.gridAlpha, 0, 1);
-  merged.gridLineWidth = clamp(merged.gridLineWidth, 0.25, 8);
-  merged.gridScale = clamp(merged.gridScale, 0.1, 8);
-  merged.curve = clamp(merged.curve, 0.4, 4);
+  merged.gridAlpha = roundNumber(clamp(merged.gridAlpha, 0, 1), 4);
+  merged.gridLineWidth = roundNumber(clamp(merged.gridLineWidth, 0.25, 8), 4);
+  merged.gridScale = roundNumber(clamp(merged.gridScale, 0.1, 8), 4);
+  merged.sceneDepthCells = Math.round(clamp(merged.sceneDepthCells ?? DEFAULT_CONFIG.sceneDepthCells, 1, 200));
+  merged.tokenScaleMultiplier = roundNumber(clamp(merged.tokenScaleMultiplier ?? 1, 0.05, 8), 4);
+  merged.curve = roundNumber(clamp(merged.curve, 0.4, 4), 4);
   merged.far = {
-    x: clamp(merged.far?.x, 0, 1),
-    y: clamp(merged.far?.y, 0, 1),
-    scale: clamp(merged.far?.scale, 0.05, 4)
+    x: roundNumber(clamp(merged.far?.x, 0, 1), 4),
+    y: roundNumber(clamp(merged.far?.y, 0, 1), 4),
+    scale: roundNumber(clamp(merged.far?.scale, 0.05, 4), 4)
   };
   merged.near = {
-    x: clamp(merged.near?.x, 0, 1),
-    y: clamp(merged.near?.y, 0, 1),
-    scale: clamp(merged.near?.scale, 0.05, 4)
+    x: roundNumber(clamp(merged.near?.x, 0, 1), 4),
+    y: roundNumber(clamp(merged.near?.y, 0, 1), 4),
+    scale: roundNumber(clamp(merged.near?.scale, 0.05, 4), 4)
   };
 
   if (Math.abs(merged.near.y - merged.far.y) < 0.02) {

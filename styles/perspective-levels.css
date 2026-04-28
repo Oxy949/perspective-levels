@@ -1,37 +1,115 @@
+.perspective-levels-config-host {
+  clear: both;
+  display: block;
+  flex: 0 0 auto;
+  grid-column: 1 / -1;
+  inline-size: 100%;
+  min-inline-size: 0;
+  box-sizing: border-box;
+  margin-block: 0.75rem 1rem;
+  position: relative;
+  z-index: 0;
+  isolation: isolate;
+}
+
+.perspective-levels-config-host,
+.perspective-levels-config-host * {
+  box-sizing: border-box;
+}
+
 .perspective-levels-config {
-  margin-top: 1rem;
+  display: block;
+  inline-size: 100%;
+  max-inline-size: 100%;
+  margin: 0;
   border: 1px solid var(--color-border-light-tertiary, #666);
   border-radius: 6px;
   padding: 0.75rem;
+  overflow: visible;
 }
 
 .perspective-levels-config legend {
+  float: none;
+  inline-size: auto;
+  max-inline-size: calc(100% - 1rem);
+  margin: 0;
   font-weight: 700;
   padding: 0 0.35rem;
 }
 
-.perspective-levels-config .form-fields input[type="number"] {
-  max-width: 5.5rem;
+.perspective-levels-row {
+  display: grid;
+  grid-template-columns: minmax(11rem, 1fr) auto;
+  gap: 0.5rem 0.75rem;
+  align-items: center;
+  min-height: 1.75rem;
+  margin-block: 0.35rem;
 }
 
-.perspective-levels-anchor-grid {
+.perspective-levels-row > label {
+  min-inline-size: 0;
+}
+
+.perspective-levels-control {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  min-inline-size: 2rem;
+}
+
+.perspective-levels-section {
+  display: block;
+  clear: both;
+  margin-block-start: 0.75rem;
+}
+
+.perspective-levels-section-title {
+  margin-block-end: 0.35rem;
+  font-weight: 700;
+}
+
+.perspective-levels-fields-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.35rem 0.75rem;
+  gap: 0.5rem 0.75rem;
   align-items: end;
+  inline-size: 100%;
 }
 
-.perspective-levels-anchor-grid label,
-.perspective-levels-grid-settings label {
+.perspective-levels-fields-grid label {
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
+  min-inline-size: 0;
   font-size: 0.82rem;
 }
 
+.perspective-levels-fields-grid input[type="number"],
+.perspective-levels-fields-grid input[type="color"] {
+  inline-size: 100%;
+  max-inline-size: none;
+}
+
 .perspective-levels-open-calibrator {
-  width: 100%;
-  margin-top: 0.5rem;
+  display: block;
+  inline-size: 100%;
+  margin-block-start: 0.75rem;
+}
+
+.perspective-levels-config .hint {
+  margin: 0.5rem 0 0;
+  opacity: 0.85;
+  line-height: 1.25;
+}
+
+@media (max-width: 620px) {
+  .perspective-levels-row {
+    grid-template-columns: 1fr auto;
+  }
+
+  .perspective-levels-fields-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 #perspective-levels-calibrator {
