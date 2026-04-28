@@ -1,5 +1,5 @@
 import { MODULE_ID } from "./constants.js";
-import { getLevelConfig, normalizeConfig, setLevelConfig } from "./config.js";
+import { getLevelConfig, normalizeConfig, setLevelConfig, isPerspectiveEnabled } from "./config.js";
 import { PerspectiveCalibrator } from "./calibrator.js";
 import { PerspectiveGridOverlay } from "./grid-overlay.js";
 import { injectLevelConfig } from "./level-config-ui.js";
@@ -92,6 +92,30 @@ export function registerHooks() {
   });
 
   hooks.on("canvasPan", () => refreshAll());
+  
+  // Обновить масштаб когда токен создается или изменяется
+  hooks.on("createToken", (token) => {
+    try {
+      const config = getLevelConfig();
+      if (isPerspectiveEnabled(config)) {
+        applyPerspectiveToToken(token.object);
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Failed to apply perspective to new token`, err);
+    }
+  });
+
+  hooks.on("updateToken", (token) => {
+    try {
+      const config = getLevelConfig();
+      if (isPerspectiveEnabled(config)) {
+        applyPerspectiveToToken(token.object);
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Failed to apply perspective to updated token`, err);
+    }
+  });
+
   hooks.on("canvasTearDown", () => {
     calibrator.close(false);
     gridOverlay.stopTicker();

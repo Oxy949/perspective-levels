@@ -1,13 +1,12 @@
 import { MODULE_ID } from "./constants.js";
 import { getLevelConfig, isPerspectiveDistanceEnabled, isPerspectiveEnabled } from "./config.js";
 import { applyPerspectiveMeasurement } from "./measurement.js";
-import { applyPerspectiveToToken, isTokenObject, restoreTokenBaseScale } from "./tokens.js";
+import { applyPerspectiveToToken, isTokenObject } from "./tokens.js";
 
-const PENDING_DRAG_TOKENS = new Set();
-let PENDING_DRAG_RAF = null;
-const CURRENTLY_DRAGGING = new Set();
-const SHIFT_KEY_STATE = new Map();
-const DRAG_START_POSITIONS = new Map();
+// Состояние для обработки масштабирования и Z-axis движения
+const PENDING_PERSPECTIVE_UPDATES = new Set();
+let PENDING_PERSPECTIVE_RAF = null;
+const DRAG_STATE = new Map(); // tokenId -> { startX, startY, startElevation, isShiftDrag, isDragging }
 
 function addTokenLikeToSet(value, set, seen = new Set()) {
   if (!value || typeof value !== "object") return;
@@ -65,50 +64,37 @@ export function collectTokenAndDragPreviews(token) {
   return [...set];
 }
 
-function flushPerspectiveDragRefresh() {
-  const tokens = [...PENDING_DRAG_TOKENS];
-  PENDING_DRAG_TOKENS.clear();
-  PENDING_DRAG_RAF = null;
+// Обновить масштаб токенов через RAF (чтобы избежать мерцания)
+function flushPerspectiveUpdates() {
+  const tokens = [...PENDING_PERSPECTIVE_UPDATES];
+  PENDING_PERSPECTIVE_UPDATES.clear();
+  PENDING_PERSPECTIVE_RAF = null;
 
   const config = getLevelConfig();
   if (!isPerspectiveEnabled(config)) return;
 
   for (const token of tokens) {
-    for (const candidate of collectTokenAndDragPreviews(token)) {
-      try { applyPerspectiveToToken(candidate); }
-      catch (err) { console.warn(`${MODULE_ID} | Failed to update token drag preview perspective`, err); }
+    try {
+      // Применить масштаб к основному токену и его превью
+      applyPerspectiveToToken(token);
+      for (const preview of collectTokenAndDragPreviews(token)) {
+        if (preview !== token) {
+          applyPerspectiveToToken(preview);
+        }
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Failed to update perspective`, err);
     }
   }
 }
 
-function restoreTokenAndDragPreviewsBaseScale(token) {
-  for (const candidate of collectTokenAndDragPreviews(token)) {
-    try { restoreTokenBaseScale(candidate); }
-    catch (err) { console.warn(`${MODULE_ID} | Failed to restore token drag-preview base scale`, err); }
-  }
-}
-
-function isDragMethod(methodName) {
-  return methodName.includes("Drag") || methodName.includes("drag") || methodName === "_updateDragDestination";
-}
-
-function isStartDragMethod(methodName) {
-  return methodName === "_onDragLeftStart" || methodName === "_onDragRightStart";
-}
-
-function isEndDragMethod(methodName) {
-  return methodName === "_onDragLeftDrop" || methodName === "_onDragRightDrop" 
-    || methodName === "_onDragLeftCancel" || methodName === "_onDragRightCancel"
-    || methodName === "_onDragEnd" || methodName === "_onDragLeftUp" || methodName === "_onDragRightUp";
-}
-
-function schedulePerspectiveDragRefresh(token) {
+function schedulePerspectiveUpdate(token) {
   if (!token) return;
-  PENDING_DRAG_TOKENS.add(token);
-  if (PENDING_DRAG_RAF) return;
+  PENDING_PERSPECTIVE_UPDATES.add(token);
+  if (PENDING_PERSPECTIVE_RAF) return;
 
   const raf = globalThis.requestAnimationFrame ?? ((fn) => globalThis.setTimeout(fn, 16));
-  PENDING_DRAG_RAF = raf(flushPerspectiveDragRefresh);
+  PENDING_PERSPECTIVE_RAF = raf(flushPerspectiveUpdates);
 }
 
 function wrapPrototypeMethod(proto, methodName, wrapper) {
@@ -116,7 +102,7 @@ function wrapPrototypeMethod(proto, methodName, wrapper) {
   if (typeof original !== "function" || original._perspectiveLevelsWrapped) return false;
 
   const wrapped = function perspectiveLevelsWrappedMethod(...args) {
-    return wrapper.call(this, original, args, methodName);
+    return wrapper.call(this, original, args);
   };
   wrapped._perspectiveLevelsWrapped = true;
   wrapped._perspectiveLevelsOriginal = original;
@@ -132,123 +118,173 @@ function installTokenPreviewScalingPatch() {
   if (!proto || proto._perspectiveLevelsPreviewPatch) return false;
   proto._perspectiveLevelsPreviewPatch = true;
 
-  const aroundTokenRefresh = function(original, args, methodName) {
-    const tokenId = this?.id ?? String(this);
-    const isShiftPressed = globalThis.keyboard?.isDown?.("Shift") ?? false;
-    
-    if (isStartDragMethod(methodName)) {
-      CURRENTLY_DRAGGING.add(tokenId);
-      SHIFT_KEY_STATE.set(tokenId, isShiftPressed);
-      // Store the starting position for Y->Z conversion
-      DRAG_START_POSITIONS.set(tokenId, {
-        x: this.document?.x ?? this.x ?? 0,
-        y: this.document?.y ?? this.y ?? 0,
-        elevation: this.document?.elevation ?? this.elevation ?? 0
-      });
-    } else if (isDragMethod(methodName) && methodName === "_onDragLeftMove" && isShiftPressed && CURRENTLY_DRAGGING.has(tokenId)) {
-      // During shift-drag move, we'll handle Y->elevation conversion after position update
-      SHIFT_KEY_STATE.set(tokenId, true);
-    }
-
-    // Only restore base scale if we're NOT in a drag operation
-    // This prevents flickering during drag
-    if (!isDragMethod(methodName)) {
-      restoreTokenAndDragPreviewsBaseScale(this);
-    }
-
+  // Обработчик для инициализации - применить масштаб сразу
+  const initHandler = function(original, args) {
     const result = original.apply(this, args);
-
-    // Handle Shift-based Z-axis dragging after position is updated
-    if (SHIFT_KEY_STATE.get(tokenId) && isDragMethod(methodName) && CURRENTLY_DRAGGING.has(tokenId)) {
-      const startPos = DRAG_START_POSITIONS.get(tokenId);
-      const currentY = this.document?.y ?? this.y ?? 0;
-      const currentX = this.document?.x ?? this.x ?? 0;
-      
-      if (startPos && currentY !== startPos.y) {
-        const yDelta = currentY - startPos.y;
-        const elevationDelta = yDelta * 0.5; // Adjust this multiplier to change sensitivity
-        const newElevation = Math.max(0, startPos.elevation + elevationDelta);
-        
-        // Update the elevation if it changed
-        if (Math.abs(newElevation - (this.document?.elevation ?? this.elevation ?? 0)) > 0.01) {
-          try {
-            // Use update directly to change elevation while keeping X/Y at start position
-            if (this.document?.update) {
-              this.document.update({ 
-                elevation: newElevation,
-                x: startPos.x,
-                y: startPos.y
-              }, { animate: false });
-            }
-          } catch (err) {
-            console.warn(`${MODULE_ID} | Failed to update token elevation during shift-drag`, err);
-          }
-        }
+    try {
+      const config = getLevelConfig();
+      if (isPerspectiveEnabled(config)) {
+        applyPerspectiveToToken(this);
       }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Failed to initialize token perspective`, err);
     }
-
-    if (result && typeof result.then === "function") {
-      return result.finally(() => {
-        if (isEndDragMethod(methodName)) {
-          CURRENTLY_DRAGGING.delete(tokenId);
-          SHIFT_KEY_STATE.delete(tokenId);
-          DRAG_START_POSITIONS.delete(tokenId);
-        }
-        schedulePerspectiveDragRefresh(this);
-      });
-    }
-
-    if (isEndDragMethod(methodName)) {
-      CURRENTLY_DRAGGING.delete(tokenId);
-      SHIFT_KEY_STATE.delete(tokenId);
-      DRAG_START_POSITIONS.delete(tokenId);
-    }
-
-    schedulePerspectiveDragRefresh(this);
     return result;
   };
 
-  for (const method of [
-    "_onDragLeftStart",
-    "_onDragLeftMove",
-    "_onDragLeftDrop",
-    "_onDragLeftCancel",
-    "_onDragRightStart",
-    "_onDragRightMove",
-    "_onDragRightDrop",
-    "_onDragRightCancel",
-    "_onDragEnd",
-    "_onDragLeftUp",
-    "_onDragRightUp",
-    "_updateDragDestination",
-    "_refreshPosition",
-    "_refreshMesh",
-    "_refreshMeshSizeAndScale"
-  ]) {
-    wrapPrototypeMethod(proto, method, aroundTokenRefresh);
-  }
+  // Инициализация токена при создании
+  wrapPrototypeMethod(proto, "draw", initHandler);
 
-  // Wrap document update to handle Shift-based elevation changes
-  if (typeof proto._onUpdateTokenDocument === "function" && !proto._onUpdateTokenDocument._perspectiveLevelsWrapped) {
-    wrapPrototypeMethod(proto, "_onUpdateTokenDocument", function(original, args) {
-      const [changed, options = {}] = args;
-      const tokenId = this?.id ?? String(this);
-      const useZAxis = SHIFT_KEY_STATE.get(tokenId);
+  // Обработчик для обычных операций
+  const genericUpdateHandler = function(original, args) {
+    const result = original.apply(this, args);
+    schedulePerspectiveUpdate(this);
+    return result;
+  };
 
-      // If Shift is being held during drag and Y is being changed, convert it to elevation
-      if (useZAxis && CURRENTLY_DRAGGING.has(tokenId) && changed?.y !== undefined && changed?.x === undefined) {
-        const yDelta = changed.y - (this.document?.y ?? this.y ?? 0);
-        const elevationDelta = -yDelta * 0.1; // Convert Y pixels to elevation units (adjust multiplier as needed)
+  // Специальный обработчик для Shift+drag - Z-axis движение
+  const dragMoveHandler = function(original, args) {
+    const tokenId = this?.id ?? String(this);
+    const isShiftPressed = globalThis.keyboard?.isDown?.("Shift") ?? false;
+    
+    // Инициализировать состояние при первом вызове
+    if (!DRAG_STATE.has(tokenId)) {
+      DRAG_STATE.set(tokenId, {
+        startX: this.document?.x ?? this.x ?? 0,
+        startY: this.document?.y ?? this.y ?? 0,
+        startElevation: this.document?.elevation ?? this.elevation ?? 0,
+        isShiftDrag: isShiftPressed,
+        isDragging: true
+      });
+    }
+
+    const state = DRAG_STATE.get(tokenId);
+    
+    // Вызовим оригинальный метод
+    const result = original.apply(this, args);
+    
+    // Если Shift НАЖАТ - преобразуем Y-движение в Z-движение
+    if (isShiftPressed) {
+      state.isShiftDrag = true;
+      
+      // Получим текущие позиции
+      const currentY = this.document?.y ?? this.y ?? 0;
+      const currentElevation = Number(this.document?.elevation ?? this.elevation ?? 0) || 0;
+      
+      // Вычислим дельту Y от начальной позиции
+      const yDelta = currentY - state.startY;
+      
+      // Преобразуем Y-дельту в elevation-дельту
+      const elevationDelta = yDelta * 0.5;
+      const newElevation = Math.max(0, state.startElevation + elevationDelta);
+      
+      // Сбросим Y обратно в начальную позицию и обновим elevation
+      if (Math.abs(newElevation - currentElevation) > 0.01) {
+        // Используем updateSource для немедленного обновления документа
+        if (this.document?.updateSource) {
+          this.document.updateSource({ 
+            y: state.startY,
+            elevation: newElevation
+          });
+        } else if (this.document) {
+          // Fallback: прямое обновление если updateSource не доступен
+          try {
+            this.document.y = state.startY;
+            this.document.elevation = newElevation;
+          } catch (err) {
+            console.warn(`${MODULE_ID} | Failed to update document properties`, err);
+          }
+        }
         
-        changed = { ...changed, y: this.document?.y ?? this.y ?? 0 };
-        const currentElevation = Number(this.document?.elevation ?? this.elevation ?? 0) || 0;
-        changed.elevation = Math.max(0, currentElevation + elevationDelta);
+        // Обновить визуальную позицию объекта
+        if (this.position) {
+          this.position.y = state.startY;
+        }
       }
+    } else {
+      state.isShiftDrag = false;
+    }
+    
+    schedulePerspectiveUpdate(this);
+    return result;
+  };
 
-      return original.call(this, changed, options);
+  // Обработчик завершения drag - сохранить финальное elevation
+  const dragEndHandler = function(original, args) {
+    const tokenId = this?.id ?? String(this);
+    const state = DRAG_STATE.get(tokenId);
+    
+    const result = original.apply(this, args);
+    
+    // Если был Shift-drag, сохранить финальную высоту
+    if (state?.isShiftDrag && this.document) {
+      const finalElevation = Number(this.document.elevation) || 0;
+      const finalY = state.startY;
+      
+      // Сохранить на сервер
+      if (this.document.update) {
+        this.document.update({
+          y: finalY,
+          elevation: finalElevation
+        }, { animate: false }).catch(err => 
+          console.warn(`${MODULE_ID} | Failed to save final elevation`, err)
+        );
+      }
+    }
+    
+    // Очистить состояние
+    DRAG_STATE.delete(tokenId);
+    schedulePerspectiveUpdate(this);
+    
+    return result;
+  };
+
+  // Применить патчи к методам Start
+  wrapPrototypeMethod(proto, "_onDragLeftStart", function(original, args) {
+    const tokenId = this?.id ?? String(this);
+    const isShift = globalThis.keyboard?.isDown?.("Shift") ?? false;
+    DRAG_STATE.set(tokenId, {
+      startX: this.document?.x ?? this.x ?? 0,
+      startY: this.document?.y ?? this.y ?? 0,
+      startElevation: this.document?.elevation ?? this.elevation ?? 0,
+      isShiftDrag: isShift,
+      isDragging: true
     });
+    return original.apply(this, args);
+  });
+
+  wrapPrototypeMethod(proto, "_onDragRightStart", function(original, args) {
+    const tokenId = this?.id ?? String(this);
+    const isShift = globalThis.keyboard?.isDown?.("Shift") ?? false;
+    DRAG_STATE.set(tokenId, {
+      startX: this.document?.x ?? this.x ?? 0,
+      startY: this.document?.y ?? this.y ?? 0,
+      startElevation: this.document?.elevation ?? this.elevation ?? 0,
+      isShiftDrag: isShift,
+      isDragging: true
+    });
+    return original.apply(this, args);
+  });
+
+  // Специально для движения
+  if (typeof proto._onDragLeftMove === "function") {
+    wrapPrototypeMethod(proto, "_onDragLeftMove", dragMoveHandler);
+  }
+  if (typeof proto._onDragRightMove === "function") {
+    wrapPrototypeMethod(proto, "_onDragRightMove", dragMoveHandler);
   }
 
+  // End drag методы
+  for (const method of ["_onDragLeftDrop", "_onDragRightDrop", "_onDragLeftCancel", "_onDragRightCancel", "_onDragEnd", "_onDragLeftUp", "_onDragRightUp"]) {
+    wrapPrototypeMethod(proto, method, dragEndHandler);
+  }
+
+  // Общие методы обновления
+  for (const method of ["_refreshPosition", "_refreshMesh", "_refreshMeshSizeAndScale", "_updateDragDestination"]) {
+    wrapPrototypeMethod(proto, method, genericUpdateHandler);
+  }
+
+  // Patch для измерения пути движения
   if (typeof proto.measureMovementPath === "function" && !proto.measureMovementPath._perspectiveLevelsWrapped) {
     wrapPrototypeMethod(proto, "measureMovementPath", function(original, args) {
       const result = original.apply(this, args);
@@ -264,7 +300,7 @@ function installTokenPreviewScalingPatch() {
     });
   }
 
-  console.log(`${MODULE_ID} | Token drag-preview scaling patch installed`);
+  console.log(`${MODULE_ID} | Token preview scaling patch installed`);
   return true;
 }
 

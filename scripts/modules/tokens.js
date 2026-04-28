@@ -98,22 +98,28 @@ export function removePerspectiveFromToken(token) {
 
 function getTokenState(token, mesh) {
   const signature = getTokenSignature(token);
-  let state = ORIGINAL_TOKEN_STATE.get(token);
-  if (state && state.signature === signature && state.meshRef === mesh) return state;
-
-  const sameMesh = Boolean(state && state.meshRef === mesh);
-  const previousScale = Number(state?.lastPerspectiveScale) || 1;
-  const safePreviousScale = Math.abs(previousScale) > 0.0001 ? previousScale : 1;
   const documentKey = getTokenDocumentKey(token);
-  const savedBase = documentKey ? TOKEN_BASE_SCALE_BY_DOCUMENT.get(documentKey) : null;
-  const hasSavedBase = Boolean(savedBase && savedBase.signature === signature);
+  let state = ORIGINAL_TOKEN_STATE.get(token);
 
-  const baseScaleX = hasSavedBase
-    ? savedBase.baseScaleX
-    : sameMesh ? mesh.scale.x / safePreviousScale : mesh.scale.x;
-  const baseScaleY = hasSavedBase
-    ? savedBase.baseScaleY
-    : sameMesh ? mesh.scale.y / safePreviousScale : mesh.scale.y;
+  // Если состояние существует и mesh не поменялся - вернуть его
+  if (state && state.signature === signature && state.meshRef === mesh) {
+    return state;
+  }
+
+  // Если mesh поменялся или это новый токен - сохранить оригинальный масштаб
+  // Оригинальный масштаб это тот, который установлен в Foundry без наших изменений
+  // Мы сохраняем текущий mesh.scale как baseScale, потом применяем перспективу
+  let baseScaleX = Number(mesh.scale.x) || 1;
+  let baseScaleY = Number(mesh.scale.y) || 1;
+  
+  // Проверим есть ли сохраненная базовая шкала
+  if (documentKey && TOKEN_BASE_SCALE_BY_DOCUMENT.has(documentKey)) {
+    const saved = TOKEN_BASE_SCALE_BY_DOCUMENT.get(documentKey);
+    if (saved && saved.signature === signature) {
+      baseScaleX = saved.baseScaleX;
+      baseScaleY = saved.baseScaleY;
+    }
+  }
 
   cleanupTokenOutline(token, state);
 
