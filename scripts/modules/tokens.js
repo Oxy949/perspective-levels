@@ -1,7 +1,7 @@
 import { LEGACY_TOKEN_OUTLINE_NAMES, MODULE_ID } from "./constants.js";
 import { getLevelConfig } from "./config.js";
-import { getSceneRect } from "./scene.js";
-import { scaleForY, screenPointToElevationGroundPoint, screenPointToPerspectiveGrid } from "./projection.js";
+import { getSceneGridDistance, getSceneRect } from "./scene.js";
+import { getPerspectiveCellScreenHeightAtRow, scaleForY, screenPointToElevationGroundPoint, screenPointToPerspectiveGrid } from "./projection.js";
 import { clamp } from "./utils.js";
 
 const ORIGINAL_TOKEN_STATE = new WeakMap();
@@ -9,6 +9,8 @@ const TOKEN_BASE_SCALE_BY_DOCUMENT = new Map();
 const TOKEN_BASE_RETRY_COUNT = new WeakMap();
 const PERSPECTIVE_SORT_STEP = 100000;
 const PERSPECTIVE_SORT_DEBOUNCE_MS = 90;
+const FLIGHT_SHADOW_NAME = "PerspectiveLevels.FlightShadow";
+const FLIGHT_SHADOW_COLOR = 0x000000;
 
 let PERSPECTIVE_SORT_RAF = null;
 let PERSPECTIVE_SORT_PERSIST_TIMEOUT = null;
@@ -165,6 +167,181 @@ function canPersistSceneTokenSort() {
   return getCurrentUser()?.isGM === true;
 }
 
+
+function getTokenShadowKey(token) {
+  return String(getTokenDocumentKey(token) ?? token?.id ?? "");
+}
+
+function isFlightShadowForToken(child, token) {
+  return child?.name === FLIGHT_SHADOW_NAME && child?._perspectiveLevelsTokenKey === getTokenShadowKey(token);
+}
+
+function destroyDisplayObject(object) {
+  if (!object || object.destroyed) return;
+  try { object.destroy({ children: true }); }
+  catch (_err) {
+    try { object.parent?.removeChild?.(object); }
+    catch (_innerErr) { /* noop */ }
+  }
+}
+
+function destroyFlightShadow(token, state = ORIGINAL_TOKEN_STATE.get(token)) {
+  const candidates = new Set();
+  if (state?.flightShadow) candidates.add(state.flightShadow);
+
+  for (const parent of [token, token?.parent, token?.mesh?.parent, globalThis.canvas?.primary, globalThis.canvas?.tokens?.objects, globalThis.canvas?.tokens]) {
+    const children = parent?.children;
+    if (!Array.isArray(children)) continue;
+    for (const child of children) {
+      if (isFlightShadowForToken(child, token)) candidates.add(child);
+    }
+  }
+
+  for (const candidate of candidates) destroyDisplayObject(candidate);
+
+  if (state) {
+    state.flightShadow = null;
+    state.flightShadowParent = null;
+  }
+}
+
+function getFlightShadowParent(token) {
+  for (const parent of [token?.mesh?.parent, globalThis.canvas?.primary, token?.parent, globalThis.canvas?.tokens?.objects, globalThis.canvas?.tokens]) {
+    if (parent && !parent.destroyed && typeof parent.addChild === "function") return parent;
+  }
+  return null;
+}
+
+function placeFlightShadowBelowToken(token, state) {
+  const shadow = state?.flightShadow;
+  const parent = shadow?.parent;
+  if (!shadow || !parent || shadow.destroyed) return;
+
+  const baseSort = Number(token?.mesh?.sort ?? token?.mesh?.zIndex ?? token?.document?.sort ?? 0) || 0;
+  shadow.sort = baseSort - 1;
+  shadow.zIndex = baseSort - 1;
+
+  try { parent.sortableChildren = true; } catch (_err) { /* noop */ }
+  try { parent.sortDirty = true; } catch (_err) { /* noop */ }
+
+  if (parent === token?.mesh?.parent && typeof parent.getChildIndex === "function" && typeof parent.addChildAt === "function") {
+    try {
+      const meshIndex = parent.getChildIndex(token.mesh);
+      const shadowIndex = parent.getChildIndex(shadow);
+      if (shadowIndex > meshIndex) {
+        parent.removeChild(shadow);
+        parent.addChildAt(shadow, Math.max(0, meshIndex));
+      }
+    } catch (_err) { /* sortableChildren usually handles this */ }
+  }
+}
+
+function ensureFlightShadow(token, state) {
+  const parent = getFlightShadowParent(token);
+  if (!parent) return null;
+
+  let shadow = state.flightShadow;
+  if (!shadow || shadow.destroyed) {
+    shadow = new PIXI.Graphics();
+    shadow.name = FLIGHT_SHADOW_NAME;
+    shadow.eventMode = "none";
+    shadow.interactive = false;
+    shadow.interactiveChildren = false;
+    shadow.cullable = false;
+    shadow._perspectiveLevelsTokenKey = getTokenShadowKey(token);
+    state.flightShadow = shadow;
+  }
+
+  if (shadow.parent !== parent) {
+    try { shadow.parent?.removeChild?.(shadow); } catch (_err) { /* noop */ }
+    try {
+      if (parent === token?.mesh?.parent && token?.mesh && typeof parent.getChildIndex === "function" && typeof parent.addChildAt === "function") {
+        parent.addChildAt(shadow, Math.max(0, parent.getChildIndex(token.mesh)));
+      } else {
+        parent.addChild(shadow);
+      }
+    } catch (_err) {
+      parent.addChild(shadow);
+    }
+    state.flightShadowParent = parent;
+  }
+
+  placeFlightShadowBelowToken(token, state);
+  return shadow;
+}
+
+function getPointInShadowParentSpace(parent, token, point) {
+  if (parent === token) {
+    const tokenX = Number(token?.position?.x ?? token?.x ?? token?.document?.x ?? 0) || 0;
+    const tokenY = Number(token?.position?.y ?? token?.y ?? token?.document?.y ?? 0) || 0;
+    return { x: point.x - tokenX, y: point.y - tokenY };
+  }
+  return { x: point.x, y: point.y };
+}
+
+function drawFilledEllipse(graphics, radiusX, radiusY, alpha) {
+  if (!graphics) return;
+
+  if (typeof graphics.beginFill === "function" && typeof graphics.drawEllipse === "function") {
+    graphics.beginFill(FLIGHT_SHADOW_COLOR, alpha);
+    graphics.drawEllipse(0, 0, radiusX, radiusY);
+    graphics.endFill?.();
+    return;
+  }
+
+  if (typeof graphics.ellipse === "function" && typeof graphics.fill === "function") {
+    graphics.ellipse(0, 0, radiusX, radiusY);
+    graphics.fill({ color: FLIGHT_SHADOW_COLOR, alpha });
+  }
+}
+
+function drawFlightShadow(graphics, radiusX, radiusY, alpha) {
+  graphics.clear?.();
+
+  // Несколько вложенных эллипсов дают мягкую, но дешёвую тень без BlurFilter:
+  // на больших сценах это безопаснее, чем отдельный filter на каждый летающий токен.
+  drawFilledEllipse(graphics, radiusX * 1.35, radiusY * 1.45, alpha * 0.16);
+  drawFilledEllipse(graphics, radiusX * 1.08, radiusY * 1.12, alpha * 0.34);
+  drawFilledEllipse(graphics, radiusX * 0.78, radiusY * 0.72, alpha * 0.52);
+}
+
+function updateFlightShadow(token, state, perspectiveScale, config) {
+  const elevation = getTokenElevation(token);
+  if (!(elevation > 0.001)) {
+    destroyFlightShadow(token, state);
+    return;
+  }
+
+  const shadow = ensureFlightShadow(token, state);
+  if (!shadow) return;
+
+  const rect = getSceneRect();
+  const ground = getTokenGroundPoint(token);
+  const parentPoint = getPointInShadowParentSpace(shadow.parent, token, ground);
+
+  const grid = screenPointToPerspectiveGrid({ x: ground.x, y: ground.y, elevation: 0 }, config, rect);
+  const cellHeight = getPerspectiveCellScreenHeightAtRow(grid.j, config, rect);
+  const gridDistance = Math.max(0.0001, getSceneGridDistance());
+  const heightSpaces = Math.abs(elevation / gridDistance);
+
+  const logicalWidth = getTokenLogicalSize(token, "x");
+  const logicalHeight = getTokenLogicalSize(token, "y");
+  const visualWidth = Math.max(4, logicalWidth * perspectiveScale);
+  const visualHeight = Math.max(4, logicalHeight * perspectiveScale);
+  const heightFade = clamp(1 - heightSpaces * 0.018, 0.58, 1);
+
+  const radiusX = clamp(visualWidth * 0.34 * heightFade, 5, visualWidth * 0.72);
+  const radiusY = clamp(Math.min(visualHeight * 0.11, cellHeight * 0.48) * heightFade, 2.5, radiusX * 0.34);
+  const alpha = clamp(0.38 - heightSpaces * 0.018, 0.14, 0.38);
+
+  shadow.visible = true;
+  shadow.alpha = 1;
+  shadow.rotation = 0;
+  shadow.scale?.set?.(1, 1);
+  shadow.position?.set?.(parentPoint.x, parentPoint.y);
+  drawFlightShadow(shadow, radiusX, radiusY, alpha);
+  placeFlightShadowBelowToken(token, state);
+}
 function removePerspectiveOutlineFilters(mesh) {
   if (!mesh || !Array.isArray(mesh.filters)) return;
   const kept = mesh.filters.filter(filter => !filter?._perspectiveLevelsOutline && !filter?._perspectiveLevelsMteOutline);
@@ -173,6 +350,7 @@ function removePerspectiveOutlineFilters(mesh) {
 
 function cleanupTokenOutline(token, state = ORIGINAL_TOKEN_STATE.get(token)) {
   removePerspectiveOutlineFilters(token.mesh);
+  destroyFlightShadow(token, state);
 
   if (state?.outlineContainer && !state.outlineContainer.destroyed) {
     state.outlineContainer.destroy({ children: true });
@@ -482,6 +660,7 @@ function applyTokenDocumentSortLocally(token, sort) {
   // Не ставим token.zIndex: Foundry сортирует токены через TokenDocument.sort,
   // тот же механизм используется кнопкой HUD «расположить выше/ниже».
   try { if (token.mesh) token.mesh.sort = sort; } catch (_err) { /* noop */ }
+  placeFlightShadowBelowToken(token, ORIGINAL_TOKEN_STATE.get(token));
   markFoundrySortDirty(token);
   return true;
 }
@@ -584,11 +763,13 @@ export function applyPerspectiveToToken(token) {
 
   if (!config.tokenScaling) {
     restoreTokenBaseScale(token);
+    destroyFlightShadow(token, ORIGINAL_TOKEN_STATE.get(token));
     schedulePerspectiveSort();
     return;
   }
 
   if (!mesh || mesh.destroyed) {
+    destroyFlightShadow(token, ORIGINAL_TOKEN_STATE.get(token));
     schedulePerspectiveSort();
     return;
   }
@@ -603,6 +784,7 @@ export function applyPerspectiveToToken(token) {
   mesh.scale.set(state.baseScaleX * scale, state.baseScaleY * scale);
   mesh._perspectiveLevelsAppliedScale = scale;
   state.lastPerspectiveScale = scale;
+  updateFlightShadow(token, state, scale, config);
 
   schedulePerspectiveSort();
 }
