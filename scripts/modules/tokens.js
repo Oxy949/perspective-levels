@@ -157,9 +157,17 @@ function cleanupLegacyRectangleOutline(token) {
   }
 }
 
+function getCurrentUser() {
+  return globalThis.game?.user ?? null;
+}
+
+function canPersistSceneTokenSort() {
+  return getCurrentUser()?.isGM === true;
+}
+
 function removePerspectiveOutlineFilters(mesh) {
   if (!mesh || !Array.isArray(mesh.filters)) return;
-  const kept = mesh.filters.filter(filter => !filter?._perspectiveLevelsOutline);
+  const kept = mesh.filters.filter(filter => !filter?._perspectiveLevelsOutline && !filter?._perspectiveLevelsMteOutline);
   mesh.filters = kept.length ? kept : null;
 }
 
@@ -492,6 +500,7 @@ function applyPerspectiveSortNow(config = getLevelConfig(), { persist = false } 
 
 async function persistPerspectiveSortSnapshot(snapshot) {
   if (!snapshot?.entries?.length) return;
+  if (!canPersistSceneTokenSort()) return;
   if (snapshot.signature === LAST_PERSISTED_SORT_SIGNATURE) return;
 
   if (PERSPECTIVE_SORT_PERSISTING) {
@@ -530,6 +539,7 @@ function flushPerspectiveSort() {
 }
 
 export function schedulePerspectiveSort({ persist = false, debounce = false } = {}) {
+  persist = Boolean(persist && canPersistSceneTokenSort());
   if (debounce && persist) {
     if (PERSPECTIVE_SORT_PERSIST_TIMEOUT) globalThis.clearTimeout(PERSPECTIVE_SORT_PERSIST_TIMEOUT);
     PERSPECTIVE_SORT_PERSIST_TIMEOUT = globalThis.setTimeout(() => {
@@ -570,7 +580,6 @@ export function applyPerspectiveToToken(token) {
 
   if (!config.tokenScaling) {
     restoreTokenBaseScale(token);
-    cleanupTokenOutline(token, ORIGINAL_TOKEN_STATE.get(token));
     schedulePerspectiveSort();
     return;
   }
@@ -591,7 +600,6 @@ export function applyPerspectiveToToken(token) {
   mesh._perspectiveLevelsAppliedScale = scale;
   state.lastPerspectiveScale = scale;
 
-  cleanupTokenOutline(token, state);
   schedulePerspectiveSort();
 }
 

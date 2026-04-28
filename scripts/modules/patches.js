@@ -7,6 +7,7 @@ import { applyPerspectiveToToken, isTokenObject, schedulePerspectiveSort } from 
 const PENDING_PERSPECTIVE_UPDATES = new Set();
 let PENDING_PERSPECTIVE_RAF = null;
 const DRAG_STATE = new Map(); // tokenId -> { startX, startY, startElevation, isShiftDrag, isDragging }
+const TOKEN_ALPHA_HIT_THRESHOLD = 0.1;
 
 function addTokenLikeToSet(value, set, seen = new Set()) {
   if (!value || typeof value !== "object") return;
@@ -112,10 +113,214 @@ function wrapPrototypeMethod(proto, methodName, wrapper) {
   return true;
 }
 
-function installTokenPreviewScalingPatch() {
-  const TokenClass = globalThis.foundry?.canvas?.placeables?.Token
+function getTokenClass() {
+  return globalThis.foundry?.canvas?.placeables?.Token
     ?? globalThis.CONFIG?.Token?.objectClass
     ?? globalThis.Token;
+}
+
+function canUpdateTokenDocument(document) {
+  const user = globalThis.game?.user;
+  if (!document || !user) return false;
+  if (user.isGM) return true;
+
+  try {
+    if (typeof document.canUserModify === "function") return Boolean(document.canUserModify(user, "update"));
+  } catch (_err) { /* noop */ }
+
+  try {
+    if (typeof document.testUserPermission === "function") {
+      return Boolean(document.testUserPermission(user, "OWNER"));
+    }
+  } catch (_err) { /* noop */ }
+
+  return false;
+}
+
+
+let PERSPECTIVE_LEVELS_OUTLINE_FILTER_DISABLED = false;
+let PERSPECTIVE_LEVELS_OUTLINE_FILTER_WARNED = false;
+
+function normalizeColorInt(value, fallback = 0xffffff) {
+  if (typeof value === "number" && Number.isFinite(value)) return value & 0xffffff;
+  if (typeof value === "string") {
+    const cleaned = value.trim().replace(/^#/, "").replace(/^0x/i, "");
+    const parsed = Number.parseInt(cleaned, 16);
+    if (Number.isFinite(parsed)) return parsed & 0xffffff;
+  }
+  try {
+    const numeric = Number(value?.valueOf?.());
+    if (Number.isFinite(numeric)) return numeric & 0xffffff;
+  } catch (_err) { /* noop */ }
+  return fallback;
+}
+
+function intColorToRgb(color) {
+  const n = normalizeColorInt(color);
+  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+}
+
+function getTokenBorderColorRgb(token) {
+  let value = null;
+
+  try { value = token?._getBorderColor?.(); }
+  catch (_err) { /* noop */ }
+
+  if (value == null) value = token?.border?.tint ?? token?.frame?.tint ?? 0xffffff;
+
+  try {
+    const ColorClass = globalThis.Color ?? globalThis.foundry?.utils?.Color;
+    const color = ColorClass?.from?.(value);
+    if (Array.isArray(color?.rgb) && color.rgb.length >= 3) return color.rgb;
+  } catch (_err) { /* noop */ }
+
+  if (Array.isArray(value) && value.length >= 3) {
+    return value.slice(0, 3).map(n => Math.max(0, Math.min(1, Number(n))));
+  }
+  return intColorToRgb(value);
+}
+
+function getOutlineOverlayFilterClass() {
+  return globalThis.foundry?.canvas?.rendering?.filters?.OutlineOverlayFilter
+    ?? globalThis.OutlineOverlayFilter
+    ?? null;
+}
+
+function createPerspectiveLevelsOutlineFilter(outlineColor) {
+  if (PERSPECTIVE_LEVELS_OUTLINE_FILTER_DISABLED) return null;
+
+  const OutlineOverlayFilter = getOutlineOverlayFilterClass();
+  if (!OutlineOverlayFilter?.create) return null;
+
+  try {
+    // Важно: не наследуемся от OutlineOverlayFilter. В Foundry v14 фабрика create()
+    // использует приватные static-поля/методы базового класса, поэтому вызов create()
+    // на subclass может падать с "object is not the right class". На v14 штатный
+    // knockout:false оставляет сам mesh видимым, что даёт тот же результат,
+    // ради которого MTE в старых версиях переопределял shader.
+    const filter = OutlineOverlayFilter.create({
+      outlineColor,
+      knockout: false,
+      wave: false,
+      animated: false
+    });
+    filter.ssOutline = true;
+    filter.animated = false;
+    filter._perspectiveLevelsMteOutline = true;
+    return filter;
+  } catch (err) {
+    PERSPECTIVE_LEVELS_OUTLINE_FILTER_DISABLED = true;
+    if (!PERSPECTIVE_LEVELS_OUTLINE_FILTER_WARNED) {
+      PERSPECTIVE_LEVELS_OUTLINE_FILTER_WARNED = true;
+      console.warn(MODULE_ID + " | Token outline filter is unavailable in this Foundry build", err);
+    }
+    return null;
+  }
+}
+
+function removePerspectiveLevelsMteOutline(mesh) {
+  if (!mesh || !Array.isArray(mesh.filters)) return;
+  const kept = mesh.filters.filter(filter => !filter?._perspectiveLevelsMteOutline);
+  mesh.filters = kept.length ? kept : null;
+}
+
+function installTokenMteOutlinePatch() {
+  const TokenClass = getTokenClass();
+  const proto = TokenClass?.prototype;
+  if (!proto || proto._perspectiveLevelsMteOutlinePatch) return false;
+  proto._perspectiveLevelsMteOutlinePatch = true;
+
+  wrapPrototypeMethod(proto, "_refreshState", function(original, args) {
+    const result = original.apply(this, args);
+
+    try {
+      const config = getLevelConfig();
+      const enabled = globalThis.canvas?.ready && isPerspectiveEnabled(config);
+      const mesh = this.mesh;
+
+      if (!enabled || !mesh || mesh.destroyed) {
+        removePerspectiveLevelsMteOutline(mesh);
+        return result;
+      }
+
+      // Как в multi-token-edit Scenescape: обычная прямоугольная рамка Foundry выключается,
+      // а вместо неё на mesh ставится outline filter.
+      if (this.border) this.border.visible = false;
+
+      if (this.document?.isSecret || !this.controlled) {
+        removePerspectiveLevelsMteOutline(mesh);
+        return result;
+      }
+
+      const outlineColor = getTokenBorderColorRgb(this);
+      const colorKey = outlineColor.map(n => Number(n).toFixed(4)).join(",");
+      let filters = Array.isArray(mesh.filters) ? mesh.filters : [];
+      let outlineFilter = filters.find(filter => filter?._perspectiveLevelsMteOutline);
+
+      if (outlineFilter?._perspectiveLevelsColorKey !== colorKey) {
+        filters = filters.filter(filter => !filter?._perspectiveLevelsMteOutline);
+        outlineFilter = null;
+      }
+
+      if (!outlineFilter) {
+        outlineFilter = createPerspectiveLevelsOutlineFilter(outlineColor);
+        if (!outlineFilter) return result;
+        outlineFilter._perspectiveLevelsColorKey = colorKey;
+        filters.push(outlineFilter);
+        mesh.filters = filters;
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Failed to apply MTE-style token outline`, err);
+    }
+
+    return result;
+  });
+
+  console.log(`${MODULE_ID} | MTE-style token outline patch installed`);
+  return true;
+}
+
+function installTokenPixelPerfectShapePatch() {
+  const TokenClass = getTokenClass();
+  const proto = TokenClass?.prototype;
+  if (!proto || proto._perspectiveLevelsPixelShapePatch) return false;
+  proto._perspectiveLevelsPixelShapePatch = true;
+
+  wrapPrototypeMethod(proto, "getShape", function(original, args) {
+    const shape = original.apply(this, args);
+    if (!shape || shape._perspectiveLevelsPixelShape || typeof shape.contains !== "function") return shape;
+
+    const originalContains = shape.contains.bind(shape);
+    shape._perspectiveLevelsPixelShape = true;
+    shape._perspectiveLevelsMesh = this.mesh;
+    shape.contains = function perspectiveLevelsPixelContains(...containsArgs) {
+      const insideRectangle = originalContains(...containsArgs);
+      if (!insideRectangle) return false;
+
+      try {
+        const config = getLevelConfig();
+        const mesh = this._perspectiveLevelsMesh;
+        const point = globalThis.canvas?.mousePosition;
+
+        if (!globalThis.canvas?.ready || !isPerspectiveEnabled(config) || !mesh?.containsCanvasPoint || !point) {
+          return insideRectangle;
+        }
+
+        return Boolean(mesh.containsCanvasPoint(point, TOKEN_ALPHA_HIT_THRESHOLD));
+      } catch (_err) {
+        return insideRectangle;
+      }
+    };
+
+    return shape;
+  });
+
+  console.log(`${MODULE_ID} | Token pixel-perfect shape patch installed`);
+  return true;
+}
+
+function installTokenPreviewScalingPatch() {
+  const TokenClass = getTokenClass();
   const proto = TokenClass?.prototype;
   if (!proto || proto._perspectiveLevelsPreviewPatch) return false;
   proto._perspectiveLevelsPreviewPatch = true;
@@ -221,12 +426,13 @@ function installTokenPreviewScalingPatch() {
       const finalElevation = Number(this.document.elevation) || 0;
       const finalY = state.startY;
       
-      // Сохранить на сервер
-      if (this.document.update) {
+      // Сохранить на сервер только если текущий пользователь реально может обновлять TokenDocument.
+      // Обычное перемещение остаётся на core Foundry; здесь мы сохраняем только наш Shift-drag elevation.
+      if (this.document.update && canUpdateTokenDocument(this.document)) {
         this.document.update({
           y: finalY,
           elevation: finalElevation
-        }, { animate: false }).catch(err => 
+        }, { animate: false }).catch(err =>
           console.warn(`${MODULE_ID} | Failed to save final elevation`, err)
         );
       }
@@ -281,7 +487,7 @@ function installTokenPreviewScalingPatch() {
   }
 
   // Общие методы обновления
-  for (const method of ["_refreshPosition", "_refreshMesh", "_refreshMeshSizeAndScale", "_updateDragDestination"]) {
+  for (const method of ["_refreshPosition", "_refreshMesh", "_refreshMeshSizeAndScale", "_updateDragDestination", "_onHoverIn", "_onHoverOut", "control", "release", "setTarget"]) {
     wrapPrototypeMethod(proto, method, genericUpdateHandler);
   }
 
@@ -330,6 +536,9 @@ function installPerspectiveMeasurementPatch() {
 }
 
 export function installRuntimePatches() {
+  installTokenMteOutlinePatch();
   installTokenPreviewScalingPatch();
+  installTokenPixelPerfectShapePatch();
   installPerspectiveMeasurementPatch();
 }
+
