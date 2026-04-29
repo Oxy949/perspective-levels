@@ -17,6 +17,7 @@ import {
   perspectiveGridModelToScreen,
   perspectiveGridToScreen,
   perspectiveGroundPointToElevatedScreen,
+  scaleForPerspectivePoint,
   scaleForY,
   screenPointToElevationGroundPoint,
   screenPointToPerspectiveGrid,
@@ -161,11 +162,26 @@ export function registerHooks() {
   hooks.on("recordToken", () => { refreshTokens(); schedulePerspectiveSort(); });
   hooks.on("stopToken", () => { refreshTokens(); schedulePerspectiveSort({ debounce: true }); });
 
-  hooks.on("updateDocument", (document, changes) => {
+  hooks.on("updateDocument", (document, changes = {}) => {
     const canvasRef = globalThis.canvas;
     if (!canvasRef?.ready) return;
     if (document?.documentName === "Level" && document.parent?.id === canvasRef.scene?.id) refreshAll();
-    if (document?.documentName === "Scene" && document.id === canvasRef.scene?.id && (changes.grid || changes.width || changes.height)) refreshAll();
+
+    if (document?.documentName === "Scene" && document.id === canvasRef.scene?.id) {
+      const hasProperty = globalThis.foundry?.utils?.hasProperty;
+      const gridChanged = Boolean(
+        changes.grid
+        || changes.width !== undefined
+        || changes.height !== undefined
+        || Object.hasOwn(changes, "grid.distance")
+        || Object.hasOwn(changes, "grid.units")
+        || Object.hasOwn(changes, "grid.size")
+        || hasProperty?.(changes, "grid.distance")
+        || hasProperty?.(changes, "grid.units")
+        || hasProperty?.(changes, "grid.size")
+      );
+      if (gridChanged) refreshAll();
+    }
   });
 }
 
@@ -180,6 +196,7 @@ export function getPublicApi() {
     closeCalibrator: () => calibrator.close(),
     toggleCalibrator: () => calibrator.toggle(),
     scaleForY,
+    scaleForPerspectivePoint,
     screenPointToPerspectiveGround,
     screenPointToPerspectiveGrid,
     getPerspectiveGridModel,
@@ -196,6 +213,7 @@ export function getPublicApi() {
       anchorToPoint,
       pointToAnchor,
       scaleForY,
+      scaleForPerspectivePoint,
       getPerspectiveCellSize,
       getPerspectiveGridModel,
       perspectiveGridModelToScreen,

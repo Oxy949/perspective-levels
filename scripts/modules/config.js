@@ -26,6 +26,13 @@ function roundNumber(value, digits = 4) {
   return Math.round((number + Number.EPSILON) * factor) / factor;
 }
 
+function normalizeRotationDegrees(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  const wrapped = ((n % 360) + 360) % 360;
+  return wrapped > 180 ? wrapped - 360 : wrapped;
+}
+
 export function normalizeConfig(config = {}) {
   const base = cloneDefaultConfig();
   const merged = mergeConfig(base, config ?? {});
@@ -49,12 +56,14 @@ export function normalizeConfig(config = {}) {
   merged.far = {
     x: roundNumber(clamp(merged.far?.x, 0, 1), 4),
     y: roundNumber(clamp(merged.far?.y, 0, 1), 4),
-    scale: roundNumber(clamp(merged.far?.scale, 0.05, 4), 4)
+    scale: roundNumber(clamp(merged.far?.scale, 0.05, 4), 4),
+    rotation: roundNumber(normalizeRotationDegrees(merged.far?.rotation), 4)
   };
   merged.near = {
     x: roundNumber(clamp(merged.near?.x, 0, 1), 4),
     y: roundNumber(clamp(merged.near?.y, 0, 1), 4),
-    scale: roundNumber(clamp(merged.near?.scale, 0.05, 4), 4)
+    scale: roundNumber(clamp(merged.near?.scale, 0.05, 4), 4),
+    rotation: roundNumber(normalizeRotationDegrees(merged.near?.rotation), 4)
   };
 
   if (Math.abs(merged.near.y - merged.far.y) < 0.02) {

@@ -85,6 +85,29 @@ export function squareGridDistanceSpaces3D(dx, dy, dz) {
   }
 }
 
+
+function roundGridCellCoordinate(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+
+  // Foundry grid measurements are cell-based: tiny floating point drift from
+  // inverse projection must not turn a 6-cell move into 5.999 or 6.001 cells.
+  return Math.round(n + Math.sign(n) * Number.EPSILON);
+}
+
+function snapPerspectiveGridToCells(coords) {
+  return {
+    ...coords,
+    i: roundGridCellCoordinate(coords?.i),
+    j: roundGridCellCoordinate(coords?.j)
+  };
+}
+
+function roundElevationToGridCells(elevationDelta, gridDistance) {
+  const raw = (Number(elevationDelta) || 0) / Math.max(0.0001, Number(gridDistance) || 1);
+  return roundGridCellCoordinate(raw);
+}
+
 function isFiniteNumber(value) {
   const n = Number(value);
   return Number.isFinite(n);
@@ -232,18 +255,23 @@ function normalizeMeasurementWaypoint(point, config = getLevelConfig(), rect = g
 }
 
 export function perspectiveDistanceBetween(a, b, config = getLevelConfig(), rect = getSceneRect()) {
-  const pa = screenPointToPerspectiveGrid(normalizeMeasurementWaypoint(a, config, rect), config, rect);
-  const pb = screenPointToPerspectiveGrid(normalizeMeasurementWaypoint(b, config, rect), config, rect);
+  const paRaw = screenPointToPerspectiveGrid(normalizeMeasurementWaypoint(a, config, rect), config, rect);
+  const pbRaw = screenPointToPerspectiveGrid(normalizeMeasurementWaypoint(b, config, rect), config, rect);
+  const pa = snapPerspectiveGridToCells(paRaw);
+  const pb = snapPerspectiveGridToCells(pbRaw);
   const gridDistance = getSceneGridDistance();
 
-  const dxCells = pb.i - pa.i;
-  const dyCells = pb.j - pa.j;
+  // i/j are coordinates in drawn perspective-grid squares. Measurements should
+  // behave like Foundry square-grid measurements: endpoints are snapped to the
+  // nearest perspective cell first, then diagonal rules are applied to integer
+  // cell deltas. Without this, inverse projection produces fractional cells and
+  // ranges drift around thresholds like 29.6 ft / 30.4 ft.
+  const dxGridCells = pb.i - pa.i;
+  const dyGridCells = pb.j - pa.j;
 
-  // Convert perspective grid cells to regular grid cells using gridScale.
-  const gridScale = Math.max(0.1, Number(config.gridScale) || 1);
-  const dxGridCells = dxCells / gridScale;
-  const dyGridCells = dyCells / gridScale;
-  const dzGridCells = (Number(pb.elevation - pa.elevation) || 0) / Math.max(0.0001, gridDistance);
+  // Elevation is stored in real scene units. Convert it to grid spaces and snap
+  // to the nearest cell as well, so 3D distance is symmetric and cell-based.
+  const dzGridCells = roundElevationToGridCells(pb.elevation - pa.elevation, gridDistance);
 
   const distanceSpaces = squareGridDistanceSpaces3D(dxGridCells, dyGridCells, dzGridCells);
   const euclideanSpaces = Math.hypot(dxGridCells, dyGridCells, dzGridCells);

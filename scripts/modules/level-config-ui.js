@@ -185,9 +185,11 @@ export function injectLevelConfig(app, html, { openCalibrator } = {}) {
             <label>Far X <input type="number" name="${fieldName("far.x")}" value="${formatNumber(cfg.far.x)}" min="0" max="1" step="any"></label>
             <label>Far Y <input type="number" name="${fieldName("far.y")}" value="${formatNumber(cfg.far.y)}" min="0" max="1" step="any"></label>
             <label>Far Scale <input type="number" name="${fieldName("far.scale")}" value="${formatNumber(cfg.far.scale)}" min="0.05" max="4" step="any"></label>
+            <label>Far Rotation <input type="number" name="${fieldName("far.rotation")}" value="${formatNumber(cfg.far.rotation ?? 0)}" min="-180" max="180" step="any"></label>
             <label>Near X <input type="number" name="${fieldName("near.x")}" value="${formatNumber(cfg.near.x)}" min="0" max="1" step="any"></label>
             <label>Near Y <input type="number" name="${fieldName("near.y")}" value="${formatNumber(cfg.near.y)}" min="0" max="1" step="any"></label>
             <label>Near Scale <input type="number" name="${fieldName("near.scale")}" value="${formatNumber(cfg.near.scale)}" min="0.05" max="4" step="any"></label>
+            <label>Near Rotation <input type="number" name="${fieldName("near.rotation")}" value="${formatNumber(cfg.near.rotation ?? 0)}" min="-180" max="180" step="any"></label>
             <label>Curve <input type="number" name="${fieldName("curve")}" value="${formatNumber(cfg.curve)}" min="0.4" max="4" step="any"></label>
           </div>
         </div>
@@ -195,7 +197,7 @@ export function injectLevelConfig(app, html, { openCalibrator } = {}) {
         <button type="button" class="perspective-levels-open-calibrator">
           <i class="fa-solid fa-crosshairs"></i> ${i18n("PERSPECTIVE_LEVELS.OpenCalibrator")}
         </button>
-        <p class="hint">Настройки сохраняются в flags текущего Level. Кнопка калибровки работает, если этот уровень сейчас открыт на canvas.</p>
+        <p class="hint">Настройки сохраняются в flags текущего Level. В калибраторе оба якоря являются линиями: перетаскивание двигает линию, колесико мыши над ней вращает её.</p>
       </fieldset>
     </section>
   `;

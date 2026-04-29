@@ -1,7 +1,18 @@
 import { getLevelConfig, normalizeConfig, setLevelConfig } from "./config.js";
-import { anchorToPoint, pointToAnchor } from "./projection.js";
+import { anchorToPoint, getPerspectiveGridModel, pointToAnchor } from "./projection.js";
 import { getSceneRect } from "./scene.js";
 import { clamp, i18n } from "./utils.js";
+
+function normalizeRotation(value) {
+  const n = Number(value) || 0;
+  const wrapped = ((n % 360) + 360) % 360;
+  return wrapped > 180 ? wrapped - 360 : wrapped;
+}
+
+function round4(value) {
+  const n = Number(value) || 0;
+  return Number(n.toFixed(4));
+}
 
 export class PerspectiveCalibrator {
   constructor({ refresh = () => {}, drawGrid = () => {} } = {}) {
@@ -109,7 +120,26 @@ export class PerspectiveCalibrator {
       anchor.alpha = 0.75;
     });
 
+    // Как у токенов Foundry: навёл на якорь и крути колёсико мыши.
+    // Без Shift — крупный шаг, с Shift — точная доводка.
+    anchor.on("wheel", event => {
+      event.stopPropagation?.();
+      event.preventDefault?.();
+      const original = event.originalEvent ?? event;
+      const step = original?.shiftKey ? 5 : 15;
+      const direction = Number(original?.deltaY ?? 0) > 0 ? step : -step;
+      this._rotateAnchor(key, direction);
+    });
+
     return anchor;
+  }
+
+  _rotateAnchor(key, delta) {
+    if (!this.config?.[key]) return;
+    this.config[key].rotation = round4(normalizeRotation((Number(this.config[key].rotation) || 0) + delta));
+    this._syncPanelFromConfig();
+    this.redraw();
+    this.refresh();
   }
 
   _onPointerMove(event) {
@@ -136,9 +166,11 @@ export class PerspectiveCalibrator {
     div.id = "perspective-levels-calibrator";
     div.innerHTML = `
       <header>${i18n("PERSPECTIVE_LEVELS.Calibrator")}</header>
-      <p class="hint">Перетащи два якоря на сцене. Масштаб якорей задаёт, какими будут токены на дальнем и ближнем плане.</p>
+      <p class="hint">Перетащи две линии-якоря на сцене. Колёсико мыши над линией вращает её, Shift+колёсико — точная доводка. Эти линии задают плоскость земли.</p>
       <label>${i18n("PERSPECTIVE_LEVELS.FarAnchor")} scale <input type="range" data-pl-scale="far" min="0.05" max="2.5" step="0.01"></label>
+      <label>${i18n("PERSPECTIVE_LEVELS.FarAnchor")} rotation <input type="range" data-pl-rotation="far" min="-180" max="180" step="1"></label>
       <label>${i18n("PERSPECTIVE_LEVELS.NearAnchor")} scale <input type="range" data-pl-scale="near" min="0.05" max="3.5" step="0.01"></label>
+      <label>${i18n("PERSPECTIVE_LEVELS.NearAnchor")} rotation <input type="range" data-pl-rotation="near" min="-180" max="180" step="1"></label>
       <label>Кривизна сетки <input type="range" data-pl-curve min="0.4" max="4" step="0.01"></label>
       <label>Масштаб клетки сетки <input type="range" data-pl-grid-scale min="0.1" max="4" step="0.05"></label>
       <label>Глубина сцены, клеток <input type="range" data-pl-scene-depth min="1" max="80" step="1"></label>
@@ -156,6 +188,14 @@ export class PerspectiveCalibrator {
       input.addEventListener("input", event => {
         const key = event.currentTarget.dataset.plScale;
         this.config[key].scale = clamp(event.currentTarget.value, 0.05, 4);
+        this.redraw();
+        this.refresh();
+      });
+    });
+    div.querySelectorAll("input[data-pl-rotation]").forEach(input => {
+      input.addEventListener("input", event => {
+        const key = event.currentTarget.dataset.plRotation;
+        this.config[key].rotation = normalizeRotation(event.currentTarget.value);
         this.redraw();
         this.refresh();
       });
@@ -192,12 +232,16 @@ export class PerspectiveCalibrator {
 
     const far = this.panel.querySelector("input[data-pl-scale='far']");
     const near = this.panel.querySelector("input[data-pl-scale='near']");
+    const farRotation = this.panel.querySelector("input[data-pl-rotation='far']");
+    const nearRotation = this.panel.querySelector("input[data-pl-rotation='near']");
     const curve = this.panel.querySelector("input[data-pl-curve]");
     const gridScale = this.panel.querySelector("input[data-pl-grid-scale]");
     const sceneDepth = this.panel.querySelector("input[data-pl-scene-depth]");
     const tokenScale = this.panel.querySelector("input[data-pl-token-scale]");
     if (far) far.value = this.config.far.scale;
     if (near) near.value = this.config.near.scale;
+    if (farRotation) farRotation.value = this.config.far.rotation ?? 0;
+    if (nearRotation) nearRotation.value = this.config.near.rotation ?? 0;
     if (curve) curve.value = this.config.curve;
     if (gridScale) gridScale.value = this.config.gridScale;
     if (sceneDepth) sceneDepth.value = this.config.sceneDepthCells;
@@ -208,27 +252,43 @@ export class PerspectiveCalibrator {
     if (!this.container || !this.config) return;
 
     const rect = getSceneRect();
+    const model = getPerspectiveGridModel(this.config, rect);
+
     for (const key of ["far", "near"]) {
       const anchor = this.anchors[key];
-      if (!anchor) continue;
+      const line = model[key];
+      if (!anchor || !line) continue;
 
-      const data = this.config[key];
-      const point = anchorToPoint(data, rect);
-      const size = Math.max(28, rect.gridSize * data.scale);
-
-      anchor.position.set(point.x, point.y);
+      const center = anchorToPoint(this.config[key], rect);
+      anchor.position.set(center.x, center.y);
       anchor.gfx.clear();
-      anchor.gfx.lineStyle({ width: 3, color: anchor._plColor, alpha: 1 });
-      anchor.gfx.beginFill(anchor._plColor, 0.22);
-      anchor.gfx.drawRoundedRect(-size / 2, -size / 2, size, size, 10);
-      anchor.gfx.endFill();
+
+      const left = { x: line.left.x - center.x, y: line.left.y - center.y };
+      const right = { x: line.right.x - center.x, y: line.right.y - center.y };
+      const handleLength = Math.min(36, Math.max(12, rect.gridSize * 0.28));
+
+      // Широкая почти невидимая линия нужна как удобная область наведения/колёсика.
+      anchor.gfx.lineStyle({ width: 18, color: anchor._plColor, alpha: 0.04 });
+      anchor.gfx.moveTo(left.x, left.y);
+      anchor.gfx.lineTo(right.x, right.y);
+
+      anchor.gfx.lineStyle({ width: 4, color: anchor._plColor, alpha: 1 });
+      anchor.gfx.moveTo(left.x, left.y);
+      anchor.gfx.lineTo(right.x, right.y);
+
       anchor.gfx.lineStyle({ width: 2, color: 0xffffff, alpha: 0.95 });
-      anchor.gfx.drawCircle(0, 0, size * 0.28);
-      anchor.gfx.moveTo(-size * 0.5, 0);
-      anchor.gfx.lineTo(size * 0.5, 0);
-      anchor.gfx.moveTo(0, -size * 0.5);
-      anchor.gfx.lineTo(0, size * 0.5);
-      anchor.label.y = size / 2 + 6;
+      anchor.gfx.drawCircle(0, 0, handleLength * 0.35);
+      anchor.gfx.moveTo(-handleLength, 0);
+      anchor.gfx.lineTo(handleLength, 0);
+      anchor.gfx.moveTo(0, -handleLength);
+      anchor.gfx.lineTo(0, handleLength);
+
+      // Маленькая метка направления: помогает видеть, куда повернута линия.
+      anchor.gfx.beginFill(anchor._plColor, 0.95);
+      anchor.gfx.drawCircle(right.x, right.y, Math.max(4, rect.gridSize * 0.06));
+      anchor.gfx.endFill?.();
+
+      anchor.label.y = handleLength + 8;
     }
 
     this.drawGrid();

@@ -735,10 +735,13 @@ function getDocumentBottomPoint(document, object) {
 
 function perspectiveKeyboardMovePoint(bottom, dx, dy, config, rect) {
   const coords = screenPointToPerspectiveGrid(bottom, config, rect);
-  const gridScale = Math.max(0.1, Number(config.gridScale) || 1);
+
+  // TokenLayer#moveMany dx/dy are in Foundry grid spaces. In perspective mode
+  // i/j are drawn perspective-grid spaces, so move by exactly dx/dy cells.
+  // gridScale only changes the visual size of those cells.
   return perspectiveGridToScreen(
-    coords.i + (dx * gridScale),
-    coords.j + (dy * gridScale),
+    coords.i + dx,
+    coords.j + dy,
     config,
     rect
   );

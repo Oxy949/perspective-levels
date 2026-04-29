@@ -19,10 +19,15 @@ export function getCanvasScale() {
 
 export function getSceneGridDistance() {
   const canvasRef = globalThis.canvas;
+
+  // Foundry VTT v14 prepares the active Scene grid as canvas.grid. Prefer the
+  // runtime BaseGrid values so Configure Scene -> Grid -> Distance changes are
+  // picked up after the canvas redraws. Scene/dimensions are kept as fallbacks
+  // for early initialization and partial mocks.
   const candidates = [
-    canvasRef?.scene?.grid?.distance,
-    canvasRef?.dimensions?.distance,
     canvasRef?.grid?.distance,
+    canvasRef?.dimensions?.distance,
+    canvasRef?.scene?.grid?.distance,
     canvasRef?.scene?.gridDistance
   ];
 
@@ -32,4 +37,32 @@ export function getSceneGridDistance() {
   }
 
   return 1;
+}
+
+export function getSceneGridUnits() {
+  const canvasRef = globalThis.canvas;
+  const candidates = [
+    canvasRef?.grid?.units,
+    canvasRef?.scene?.grid?.units,
+    canvasRef?.dimensions?.units,
+    canvasRef?.scene?.gridUnits
+  ];
+
+  for (const value of candidates) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+
+  return "";
+}
+
+export function getSceneGridMetrics() {
+  const rect = getSceneRect();
+  const distance = getSceneGridDistance();
+  return {
+    size: rect.gridSize,
+    distance,
+    units: getSceneGridUnits(),
+    pixelsPerDistanceUnit: rect.gridSize / distance,
+    distanceUnitsPerPixel: distance / rect.gridSize
+  };
 }

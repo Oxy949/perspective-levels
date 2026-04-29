@@ -1,7 +1,7 @@
 import { LEGACY_TOKEN_OUTLINE_NAMES, MODULE_ID } from "./constants.js";
 import { getLevelConfig } from "./config.js";
 import { getSceneGridDistance, getSceneRect } from "./scene.js";
-import { getPerspectiveCellScreenHeightAtRow, scaleForY, screenPointToElevationGroundPoint, screenPointToPerspectiveGrid } from "./projection.js";
+import { getPerspectiveCellScreenHeightAtRow, scaleForPerspectivePoint, screenPointToElevationGroundPoint, screenPointToPerspectiveGrid } from "./projection.js";
 import { clamp } from "./utils.js";
 
 const ORIGINAL_TOKEN_STATE = new WeakMap();
@@ -779,7 +779,7 @@ export function applyPerspectiveToToken(token) {
   else scheduleBaseScaleRetry(token);
 
   const tokenScaleMultiplier = clamp(config.tokenScaleMultiplier ?? 1, 0.05, 8);
-  const scale = scaleForY(getTokenGroundY(token), config) * tokenScaleMultiplier;
+  const scale = scaleForPerspectivePoint(getTokenGroundPoint(token), config) * tokenScaleMultiplier;
 
   mesh.scale.set(state.baseScaleX * scale, state.baseScaleY * scale);
   mesh._perspectiveLevelsAppliedScale = scale;
