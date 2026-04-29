@@ -59,6 +59,15 @@ export function scaleForPerspectivePoint(point, config = getLevelConfig(), rect 
   return config.far.scale + (config.near.scale - config.far.scale) * t;
 }
 
+export function scaleForPerspectiveToken(point, config = getLevelConfig(), rect = getSceneRect()) {
+  // gridScale controls the visible size of one perspective cell in pixels.
+  // Token scaling must follow it too: when all calibration values are 1:1,
+  // a normal 1x1 Foundry token should visually occupy exactly one drawn
+  // perspective cell. Distance math stays cell-based elsewhere.
+  const cellVisualScale = clamp(config.gridScale ?? 1, 0.1, 8);
+  return scaleForPerspectivePoint(point, config, rect) * cellVisualScale;
+}
+
 export function scaleForY(y, config = getLevelConfig(), rect = getSceneRect()) {
   const model = getPerspectiveGridModel(config, rect);
   return scaleForPerspectivePoint({ x: model.near.center.x, y, elevation: 0 }, config, rect);

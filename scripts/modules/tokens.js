@@ -1,7 +1,7 @@
 import { LEGACY_TOKEN_OUTLINE_NAMES, MODULE_ID } from "./constants.js";
 import { getLevelConfig } from "./config.js";
 import { getSceneGridDistance, getSceneRect } from "./scene.js";
-import { getPerspectiveCellScreenHeightAtRow, scaleForPerspectivePoint, screenPointToElevationGroundPoint, screenPointToPerspectiveGrid } from "./projection.js";
+import { getPerspectiveCellScreenHeightAtRow, scaleForPerspectiveToken, screenPointToElevationGroundPoint, screenPointToPerspectiveGrid } from "./projection.js";
 import { clamp } from "./utils.js";
 
 const ORIGINAL_TOKEN_STATE = new WeakMap();
@@ -486,6 +486,57 @@ export function getTokenGroundPoint(token) {
   return screenPointToElevationGroundPoint(getTokenVisualBottomPoint(token), config, getSceneRect());
 }
 
+function readBoundsNumber(bounds, key, fallback = null) {
+  const value = Number(bounds?.[key]);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function getDisplayObjectWorldBounds(object) {
+  if (!object || object.destroyed) return null;
+
+  for (const candidate of [object.mesh, object]) {
+    if (!candidate || candidate.destroyed || typeof candidate.getBounds !== "function") continue;
+    try {
+      const bounds = candidate.getBounds(false);
+      const left = readBoundsNumber(bounds, "left", readBoundsNumber(bounds, "x"));
+      const top = readBoundsNumber(bounds, "top", readBoundsNumber(bounds, "y"));
+      const width = readBoundsNumber(bounds, "width");
+      const height = readBoundsNumber(bounds, "height");
+      const right = readBoundsNumber(bounds, "right", (left !== null && width !== null) ? left + width : null);
+      const bottom = readBoundsNumber(bounds, "bottom", (top !== null && height !== null) ? top + height : null);
+
+      if ([left, right, top, bottom].every(Number.isFinite) && Math.abs(right - left) > 0.001 && Math.abs(bottom - top) > 0.001) {
+        return { left, right, top, bottom, width: right - left, height: bottom - top };
+      }
+    } catch (_err) { /* getBounds can throw while a preview is being destroyed */ }
+  }
+
+  return null;
+}
+
+function getTokenVisualSortPoint(token) {
+  // Depth sorting must follow the same visual footprint the player sees. Since
+  // v0.2.24 gridScale also scales token art, the old document-rectangle bottom
+  // could lag behind the rendered feet and make near/far ordering look broken.
+  // Prefer the rendered mesh bounds after perspective scaling; fall back to the
+  // logical bottom for early draw / destroyed preview edge cases.
+  const bounds = getDisplayObjectWorldBounds(token);
+  if (bounds) {
+    return {
+      x: (bounds.left + bounds.right) / 2,
+      y: bounds.bottom,
+      elevation: getTokenElevation(token)
+    };
+  }
+
+  return getTokenVisualBottomPoint(token);
+}
+
+function getTokenSortGroundPoint(token) {
+  const config = getLevelConfig();
+  return screenPointToElevationGroundPoint(getTokenVisualSortPoint(token), config, getSceneRect());
+}
+
 export function getTokenGroundY(token) {
   return getTokenGroundPoint(token).y;
 }
@@ -584,7 +635,7 @@ function getTokenSortProxy(token) {
 
 function getPerspectiveTokenDepthSortValue(token, config) {
   const proxy = getTokenSortProxy(token);
-  const point = getTokenGroundPoint(proxy);
+  const point = getTokenSortGroundPoint(proxy);
   const coords = screenPointToPerspectiveGrid(point, config, getSceneRect());
 
   const depthCells = Number.isFinite(Number(coords?.j)) ? Number(coords.j) : 0;
@@ -779,7 +830,7 @@ export function applyPerspectiveToToken(token) {
   else scheduleBaseScaleRetry(token);
 
   const tokenScaleMultiplier = clamp(config.tokenScaleMultiplier ?? 1, 0.05, 8);
-  const scale = scaleForPerspectivePoint(getTokenGroundPoint(token), config) * tokenScaleMultiplier;
+  const scale = scaleForPerspectiveToken(getTokenGroundPoint(token), config) * tokenScaleMultiplier;
 
   mesh.scale.set(state.baseScaleX * scale, state.baseScaleY * scale);
   mesh._perspectiveLevelsAppliedScale = scale;

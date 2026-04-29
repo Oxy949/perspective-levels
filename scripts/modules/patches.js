@@ -12,6 +12,9 @@ let PENDING_PERSPECTIVE_RAF = null;
 const DRAG_STATE = new Map(); // tokenId -> { startX, startY, startElevation, isShiftDrag, isDragging }
 let ACTIVE_DRAG_EVENT_SHIFT = false;
 const TOKEN_ALPHA_HIT_THRESHOLD = 0.1;
+const TARGET_KEY_CODES = new Set(["AltLeft", "AltRight", "Alt", "OptionLeft", "OptionRight"]);
+let PERSPECTIVE_TARGET_KEY_HELD = false;
+let PERSPECTIVE_TARGET_REFRESH_RAF = null;
 
 function addTokenLikeToSet(value, set, seen = new Set()) {
   if (!value || typeof value !== "object") return;
@@ -442,6 +445,88 @@ function removePerspectiveLevelsMteOutline(mesh) {
   mesh.filters = kept.length ? kept : null;
 }
 
+
+function isPerspectiveTokenTargetToolActive() {
+  const layer = globalThis.canvas?.tokens;
+  if (layer?.highlightObjects) return true;
+  if (PERSPECTIVE_TARGET_KEY_HELD) return true;
+
+  // In FVTT 14 the temporary target key toggles the active control/tool stack.
+  // Different builds expose that state through slightly different properties,
+  // so keep this intentionally defensive.
+  const controls = globalThis.ui?.controls;
+  const candidates = [
+    controls?.activeTool,
+    controls?.currentTool,
+    controls?.control?.tool,
+    controls?.control?.activeTool,
+    controls?.activeControl?.tool,
+    controls?.activeControl?.activeTool,
+    globalThis.canvas?.activeLayer?.options?.name === "tokens" ? globalThis.canvas?.activeLayer?.tool : null
+  ];
+
+  for (const candidate of candidates) {
+    const value = typeof candidate === "string" ? candidate : candidate?.name ?? candidate?.id ?? candidate?.tool;
+    if (typeof value === "string" && /target/i.test(value)) return true;
+  }
+
+  return false;
+}
+
+function canShowPerspectiveTargetCandidateOutline(token) {
+  if (!token || token.destroyed || token.isPreview) return false;
+  if (token.document?.isSecret) return false;
+
+  const user = globalThis.game?.user;
+
+  try {
+    if (typeof token.can === "function" && user && !token.can(user, "hover") && !token.can(user, "view")) return false;
+  } catch (_err) { /* some systems throw while canvas is tearing down */ }
+
+  try {
+    const visible = token.isVisible ?? token.visible;
+    if (visible === false) return false;
+  } catch (_err) { /* noop */ }
+
+  return true;
+}
+
+function shouldApplyPerspectiveTokenOutline(token) {
+  if (!token || token.destroyed) return false;
+  if (token.document?.isSecret) return false;
+
+  // Normal Foundry states: selected, hovered, and currently targeted tokens all
+  // get a state border. We replace that rectangle with the alpha-outline.
+  if (token.controlled || token.hover || token.isTargeted || token.targeted?.has?.(globalThis.game?.user)) return true;
+
+  // When the Target tool / temporary target key is active Foundry highlights all
+  // targetable token objects. In perspective mode the native rectangular border
+  // is hidden, so mirror that state with our PNG outline.
+  if (isPerspectiveTokenTargetToolActive() && canShowPerspectiveTargetCandidateOutline(token)) return true;
+
+  return false;
+}
+
+function refreshPerspectiveTokenOutlines() {
+  PERSPECTIVE_TARGET_REFRESH_RAF = null;
+
+  try {
+    if (!globalThis.canvas?.ready || !isPerspectiveEnabled(getLevelConfig())) return;
+    for (const token of globalThis.canvas?.tokens?.placeables ?? []) {
+      try {
+        if (token.renderFlags?.set) token.renderFlags.set({ refreshState: true });
+        else if (typeof token._refreshState === "function") token._refreshState();
+      } catch (_err) { /* noop */ }
+    }
+  } catch (_err) { /* noop */ }
+}
+
+function schedulePerspectiveTargetOutlineRefresh() {
+  if (PERSPECTIVE_TARGET_REFRESH_RAF) return;
+  const raf = globalThis.requestAnimationFrame ?? ((fn) => globalThis.setTimeout(fn, 16));
+  PERSPECTIVE_TARGET_REFRESH_RAF = raf(refreshPerspectiveTokenOutlines);
+}
+
 function installTokenMteOutlinePatch() {
   const TokenClass = getTokenClass();
   const proto = TokenClass?.prototype;
@@ -465,7 +550,7 @@ function installTokenMteOutlinePatch() {
       // а вместо неё на mesh ставится outline filter по альфе токена.
       if (this.border) this.border.visible = false;
 
-      if (this.document?.isSecret || !this.controlled) {
+      if (!shouldApplyPerspectiveTokenOutline(this)) {
         removePerspectiveLevelsMteOutline(mesh);
         return result;
       }
@@ -837,6 +922,52 @@ function installPerspectiveTokenLayerMovementPatch() {
   return true;
 }
 
+
+function installPerspectiveTargetHighlightPatch() {
+  if (globalThis.__PERSPECTIVE_LEVELS_TARGET_HIGHLIGHT_PATCHED__) return false;
+  globalThis.__PERSPECTIVE_LEVELS_TARGET_HIGHLIGHT_PATCHED__ = true;
+
+  const onKeyChange = (event, down) => {
+    const key = event?.key;
+    const code = event?.code;
+    if (!TARGET_KEY_CODES.has(code) && !TARGET_KEY_CODES.has(key)) return;
+    if (PERSPECTIVE_TARGET_KEY_HELD === down) return;
+    PERSPECTIVE_TARGET_KEY_HELD = down;
+    schedulePerspectiveTargetOutlineRefresh();
+  };
+
+  globalThis.window?.addEventListener?.("keydown", event => onKeyChange(event, true), true);
+  globalThis.window?.addEventListener?.("keyup", event => onKeyChange(event, false), true);
+  globalThis.window?.addEventListener?.("blur", () => {
+    if (!PERSPECTIVE_TARGET_KEY_HELD) return;
+    PERSPECTIVE_TARGET_KEY_HELD = false;
+    schedulePerspectiveTargetOutlineRefresh();
+  }, true);
+
+  const TokenLayerClass = globalThis.foundry?.canvas?.layers?.TokenLayer ?? globalThis.TokenLayer;
+  const proto = TokenLayerClass?.prototype;
+  if (proto && typeof proto._highlightObjects === "function" && !proto._perspectiveLevelsTargetHighlightObjectsPatch) {
+    proto._perspectiveLevelsTargetHighlightObjectsPatch = true;
+    wrapPrototypeMethod(proto, "_highlightObjects", function(original, args) {
+      const result = original.apply(this, args);
+      schedulePerspectiveTargetOutlineRefresh();
+      return result;
+    });
+  }
+
+  try {
+    globalThis.Hooks?.on?.("targetToken", (_user, token) => {
+      try {
+        token?.renderFlags?.set?.({ refreshState: true });
+        schedulePerspectiveTargetOutlineRefresh();
+      } catch (_err) { /* noop */ }
+    });
+  } catch (_err) { /* noop */ }
+
+  console.log(MODULE_ID + " | Perspective target highlight patch installed");
+  return true;
+}
+
 function installPerspectiveMeasurementPatch() {
   const proto = globalThis.foundry?.grid?.BaseGrid?.prototype;
   if (!proto || proto._perspectiveLevelsMeasurementPatch) return false;
@@ -866,6 +997,7 @@ export function installRuntimePatches() {
   installTokenPreviewScalingPatch();
   installTokenPixelPerfectShapePatch();
   installPerspectiveTokenLayerMovementPatch();
+  installPerspectiveTargetHighlightPatch();
   installPerspectiveMeasurementPatch();
 }
 
