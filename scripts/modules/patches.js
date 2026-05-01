@@ -277,20 +277,22 @@ function installTokenPixelPerfectShapePatch() {
 
     const originalContains = shape.contains.bind(shape);
     shape._perspectiveLevelsPixelShape = true;
+    shape._perspectiveLevelsToken = this;
     shape._perspectiveLevelsMesh = this.mesh;
     shape.contains = function perspectiveLevelsPixelContains(...containsArgs) {
       const insideRectangle = originalContains(...containsArgs);
-      if (!insideRectangle) return false;
 
       try {
         const config = getLevelConfig();
-        const mesh = this._perspectiveLevelsMesh;
+        const mesh = this._perspectiveLevelsToken?.mesh ?? this._perspectiveLevelsMesh;
         const point = globalThis.canvas?.mousePosition;
 
         if (!globalThis.canvas?.ready || !isPerspectiveEnabled(config) || !mesh?.containsCanvasPoint || !point) {
           return insideRectangle;
         }
 
+        // The perspective/art alignment can move visible token pixels outside
+        // the document rectangle. Treat those pixels as the token too.
         return Boolean(mesh.containsCanvasPoint(point, TOKEN_ALPHA_HIT_THRESHOLD));
       } catch (_err) {
         return insideRectangle;
