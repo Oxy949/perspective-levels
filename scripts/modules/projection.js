@@ -52,25 +52,25 @@ function lineDataForAnchor(anchor, length, rect = getSceneRect()) {
   };
 }
 
-export function scaleForPerspectivePoint(point, config = getLevelConfig(), rect = getSceneRect()) {
-  const model = getPerspectiveGridModel(config, rect);
-  const coords = screenPointToPerspectiveGridRaw(point, config, rect);
+export function scaleForPerspectivePoint(point, config = getLevelConfig(), rect = getSceneRect(), model = null) {
+  model ??= getPerspectiveGridModel(config, rect);
+  const coords = screenPointToPerspectiveGridRaw(point, config, rect, model);
   const t = clamp(coords.j / Math.max(1, model.rows), 0, 1);
   return config.far.scale + (config.near.scale - config.far.scale) * t;
 }
 
-export function scaleForPerspectiveToken(point, config = getLevelConfig(), rect = getSceneRect()) {
+export function scaleForPerspectiveToken(point, config = getLevelConfig(), rect = getSceneRect(), model = null) {
   // gridScale controls the visible size of one perspective cell in pixels.
   // Token scaling must follow it too: when all calibration values are 1:1,
   // a normal 1x1 Foundry token should visually occupy exactly one drawn
   // perspective cell. Distance math stays cell-based elsewhere.
   const cellVisualScale = clamp(config.gridScale ?? 1, 0.1, 8);
-  return scaleForPerspectivePoint(point, config, rect) * cellVisualScale;
+  return scaleForPerspectivePoint(point, config, rect, model) * cellVisualScale;
 }
 
 export function scaleForY(y, config = getLevelConfig(), rect = getSceneRect()) {
   const model = getPerspectiveGridModel(config, rect);
-  return scaleForPerspectivePoint({ x: model.near.center.x, y, elevation: 0 }, config, rect);
+  return scaleForPerspectivePoint({ x: model.near.center.x, y, elevation: 0 }, config, rect, model);
 }
 
 export function getElevation(point) {
@@ -290,16 +290,16 @@ function solveVisualGridCoordinates(model, point) {
   };
 }
 
-function screenPointToPerspectiveGridRaw(point, config = getLevelConfig(), rect = getSceneRect()) {
+function screenPointToPerspectiveGridRaw(point, config = getLevelConfig(), rect = getSceneRect(), model = null) {
   const p = getPointXY(point);
-  const model = getPerspectiveGridModel(config, rect);
+  model ??= getPerspectiveGridModel(config, rect);
   const coords = solveVisualGridCoordinates(model, p);
   coords.elevation = p.elevation;
   return coords;
 }
 
-export function getPerspectiveCellScreenHeightAtRow(row, config = getLevelConfig(), rect = getSceneRect()) {
-  const model = getPerspectiveGridModel(config, rect);
+export function getPerspectiveCellScreenHeightAtRow(row, config = getLevelConfig(), rect = getSceneRect(), model = null) {
+  model ??= getPerspectiveGridModel(config, rect);
   const safeRow = Number.isFinite(Number(row)) ? Number(row) : 0;
   const p0 = perspectiveGridModelToScreen(model, model.columns / 2, safeRow);
   const p1 = perspectiveGridModelToScreen(model, model.columns / 2, safeRow + 1);
@@ -307,7 +307,7 @@ export function getPerspectiveCellScreenHeightAtRow(row, config = getLevelConfig
   return Number.isFinite(height) && height > 0.0001 ? height : Math.max(1, rect.gridSize * 0.25);
 }
 
-export function elevationToScreenOffsetAtRow(elevation, row, config = getLevelConfig(), rect = getSceneRect()) {
+export function elevationToScreenOffsetAtRow(elevation, row, config = getLevelConfig(), rect = getSceneRect(), model = null) {
   const e = Number(elevation) || 0;
   if (Math.abs(e) < 0.0001) return 0;
 
@@ -317,12 +317,13 @@ export function elevationToScreenOffsetAtRow(elevation, row, config = getLevelCo
   // Elevation is stored in real scene distance units. Convert it to grid
   // spaces with the active scene Grid -> Distance. gridScale is visual-only
   // here; one perspective row still represents one Foundry grid space.
-  return spaces * getPerspectiveCellScreenHeightAtRow(row, config, rect);
+  return spaces * getPerspectiveCellScreenHeightAtRow(row, config, rect, model);
 }
 
-export function screenPointToElevationGroundPoint(point, config = getLevelConfig(), rect = getSceneRect()) {
+export function screenPointToElevationGroundPoint(point, config = getLevelConfig(), rect = getSceneRect(), model = null) {
   const p = getPointXY(point);
   if (Math.abs(p.elevation) < 0.0001) return p;
+  model ??= getPerspectiveGridModel(config, rect);
 
   // Foundry v14 stores token elevation in real scene units. For perspective mode we
   // interpret the token's canvas Y as a projected/elevated visual point and recover
@@ -330,8 +331,8 @@ export function screenPointToElevationGroundPoint(point, config = getLevelConfig
   // perspective row, so solve it iteratively instead of using a constant.
   let groundY = p.y;
   for (let i = 0; i < 5; i++) {
-    const coords = screenPointToPerspectiveGridRaw({ x: p.x, y: groundY, elevation: 0 }, config, rect);
-    const offset = elevationToScreenOffsetAtRow(p.elevation, coords.j, config, rect);
+    const coords = screenPointToPerspectiveGridRaw({ x: p.x, y: groundY, elevation: 0 }, config, rect, model);
+    const offset = elevationToScreenOffsetAtRow(p.elevation, coords.j, config, rect, model);
     const nextY = p.y + offset;
     if (Math.abs(nextY - groundY) < 0.01) {
       groundY = nextY;
@@ -343,24 +344,26 @@ export function screenPointToElevationGroundPoint(point, config = getLevelConfig
   return { x: p.x, y: groundY, elevation: p.elevation };
 }
 
-export function perspectiveGroundPointToElevatedScreen(point, config = getLevelConfig(), rect = getSceneRect()) {
+export function perspectiveGroundPointToElevatedScreen(point, config = getLevelConfig(), rect = getSceneRect(), model = null) {
   const p = getPointXY(point);
   if (Math.abs(p.elevation) < 0.0001) return p;
+  model ??= getPerspectiveGridModel(config, rect);
 
-  const coords = screenPointToPerspectiveGridRaw({ x: p.x, y: p.y, elevation: 0 }, config, rect);
-  const offset = elevationToScreenOffsetAtRow(p.elevation, coords.j, config, rect);
+  const coords = screenPointToPerspectiveGridRaw({ x: p.x, y: p.y, elevation: 0 }, config, rect, model);
+  const offset = elevationToScreenOffsetAtRow(p.elevation, coords.j, config, rect, model);
   return { x: p.x, y: p.y - offset, elevation: p.elevation };
 }
 
-export function screenPointToPerspectiveGrid(point, config = getLevelConfig(), rect = getSceneRect()) {
-  const p = screenPointToElevationGroundPoint(point, config, rect);
-  const coords = screenPointToPerspectiveGridRaw(p, config, rect);
+export function screenPointToPerspectiveGrid(point, config = getLevelConfig(), rect = getSceneRect(), model = null) {
+  model ??= getPerspectiveGridModel(config, rect);
+  const p = screenPointToElevationGroundPoint(point, config, rect, model);
+  const coords = screenPointToPerspectiveGridRaw(p, config, rect, model);
   coords.elevation = p.elevation;
   return coords;
 }
 
-export function screenPointToPerspectiveGround(point, config = getLevelConfig(), rect = getSceneRect()) {
-  const coords = screenPointToPerspectiveGrid(point, config, rect);
+export function screenPointToPerspectiveGround(point, config = getLevelConfig(), rect = getSceneRect(), model = null) {
+  const coords = screenPointToPerspectiveGrid(point, config, rect, model);
   return {
     x: coords.i * rect.gridSize,
     y: coords.j * rect.gridSize,

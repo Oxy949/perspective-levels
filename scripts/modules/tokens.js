@@ -1,7 +1,7 @@
 import { MODULE_ID } from "./constants.js";
 import { getLevelConfig } from "./config.js";
 import { getSceneGridDistance, getSceneRect } from "./scene.js";
-import { getPerspectiveCellScreenHeightAtRow, scaleForPerspectiveToken, screenPointToElevationGroundPoint, screenPointToPerspectiveGrid } from "./projection.js";
+import { getPerspectiveCellScreenHeightAtRow, getPerspectiveGridModel, scaleForPerspectiveToken, screenPointToElevationGroundPoint, screenPointToPerspectiveGrid } from "./projection.js";
 import { clamp } from "./utils.js";
 
 const ORIGINAL_TOKEN_STATE = new WeakMap();
@@ -19,6 +19,10 @@ let PERSPECTIVE_SORT_PERSISTING = false;
 let PERSPECTIVE_SORT_PERSIST_AGAIN = false;
 let LAST_LOCAL_SORT_SIGNATURE = "";
 let LAST_PERSISTED_SORT_SIGNATURE = "";
+let PERSPECTIVE_SORT_FORCE_FULL = true;
+
+const PERSPECTIVE_SORT_DIRTY_TOKENS = new Set();
+const PERSPECTIVE_SORT_CACHE = new Map();
 
 export function isTokenObject(object) {
   return object?.document?.documentName === "Token" || object?.constructor?.name === "Token";
@@ -29,6 +33,14 @@ export function getTokenDocumentKey(token) {
     ?? token?.document?.id
     ?? token?.id
     ?? null;
+}
+
+function getTokenSortCacheKey(token) {
+  const id = token?._original?.document?.id
+    ?? token?.document?.id
+    ?? token?._original?.id
+    ?? token?.id;
+  return id === undefined || id === null ? null : String(id);
 }
 
 export function forEachToken(callback) {
@@ -82,8 +94,7 @@ function getDocumentTextureScale(token, axis) {
   return Number.isFinite(n) && Math.abs(n) > 0.000001 ? n : 1;
 }
 
-function getTokenLogicalSize(token, axis) {
-  const rect = getSceneRect();
+function getTokenLogicalSize(token, axis, rect = getSceneRect()) {
   const isX = axis === "x";
   const documentUnits = Number(isX ? token?.document?.width : token?.document?.height);
   return getFiniteNumber(
@@ -157,11 +168,11 @@ function restoreTokenBaseMeshAnchor(token, state = ORIGINAL_TOKEN_STATE.get(toke
   return restored;
 }
 
-function calculateDocumentBaseScale(token, mesh) {
+function calculateDocumentBaseScale(token, mesh, rect = getSceneRect()) {
   const textureWidth = getTextureDimension(mesh, "x");
   const textureHeight = getTextureDimension(mesh, "y");
-  const logicalWidth = getTokenLogicalSize(token, "x");
-  const logicalHeight = getTokenLogicalSize(token, "y");
+  const logicalWidth = getTokenLogicalSize(token, "x", rect);
+  const logicalHeight = getTokenLogicalSize(token, "y", rect);
 
   if (!textureWidth || !textureHeight || !logicalWidth || !logicalHeight) return null;
 
@@ -353,7 +364,7 @@ function drawFlightShadow(graphics, radiusX, radiusY, alpha) {
   drawFilledEllipse(graphics, radiusX * 0.78, radiusY * 0.72, alpha * 0.52);
 }
 
-function updateFlightShadow(token, state, perspectiveScale, config) {
+function updateFlightShadow(token, state, perspectiveScale, config, rect = getSceneRect(), model = null) {
   const elevation = getTokenElevation(token);
   if (!(elevation > 0.001)) {
     destroyFlightShadow(token, state);
@@ -363,17 +374,16 @@ function updateFlightShadow(token, state, perspectiveScale, config) {
   const shadow = ensureFlightShadow(token, state);
   if (!shadow) return;
 
-  const rect = getSceneRect();
-  const ground = getTokenGroundPoint(token);
+  const ground = getTokenGroundPoint(token, config, rect, model);
   const parentPoint = getPointInShadowParentSpace(shadow.parent, token, ground);
 
-  const grid = screenPointToPerspectiveGrid({ x: ground.x, y: ground.y, elevation: 0 }, config, rect);
-  const cellHeight = getPerspectiveCellScreenHeightAtRow(grid.j, config, rect);
+  const grid = screenPointToPerspectiveGrid({ x: ground.x, y: ground.y, elevation: 0 }, config, rect, model);
+  const cellHeight = getPerspectiveCellScreenHeightAtRow(grid.j, config, rect, model);
   const gridDistance = Math.max(0.0001, getSceneGridDistance());
   const heightSpaces = Math.abs(elevation / gridDistance);
 
-  const logicalWidth = getTokenLogicalSize(token, "x");
-  const logicalHeight = getTokenLogicalSize(token, "y");
+  const logicalWidth = getTokenLogicalSize(token, "x", rect);
+  const logicalHeight = getTokenLogicalSize(token, "y", rect);
   const visualWidth = Math.max(4, logicalWidth * perspectiveScale);
   const visualHeight = Math.max(4, logicalHeight * perspectiveScale);
   const heightFade = clamp(1 - heightSpaces * 0.018, 0.58, 1);
@@ -395,6 +405,10 @@ function cleanupTokenVisuals(token, state = ORIGINAL_TOKEN_STATE.get(token)) {
 }
 
 export function removePerspectiveFromToken(token) {
+  const sortKey = getTokenSortCacheKey(token);
+  if (sortKey) PERSPECTIVE_SORT_CACHE.delete(sortKey);
+  PERSPECTIVE_SORT_DIRTY_TOKENS.delete(token);
+
   const state = ORIGINAL_TOKEN_STATE.get(token);
   if (!state) {
     cleanupTokenVisuals(token, null);
@@ -423,10 +437,10 @@ export function removePerspectiveFromToken(token) {
   }
 }
 
-function getTokenState(token, mesh) {
+function getTokenState(token, mesh, rect = getSceneRect()) {
   const signature = getTokenSignature(token);
   const documentKey = getTokenDocumentKey(token);
-  const documentBase = calculateDocumentBaseScale(token, mesh);
+  const documentBase = calculateDocumentBaseScale(token, mesh, rect);
   let state = ORIGINAL_TOKEN_STATE.get(token);
 
   // Если состояние существует и mesh не поменялся — вернуть его. Если раньше
@@ -506,9 +520,9 @@ export function restoreTokenBaseScale(token) {
   return true;
 }
 
-function calculateTokenVerticalAlignOffsetY(token, mesh, state, perspectiveScale, config) {
+function calculateTokenVerticalAlignOffsetY(token, mesh, state, perspectiveScale, config, rect = getSceneRect()) {
   const align = clamp(config?.tokenArtVerticalAlign ?? 0.5, 0, 1);
-  const logicalHeight = getTokenLogicalSize(token, "y");
+  const logicalHeight = getTokenLogicalSize(token, "y", rect);
   const textureHeight = getTextureDimension(mesh, "y");
   const artHeight = Math.abs((Number(textureHeight) || 0) * (Number(state?.baseScaleY) || 0) * (Number(perspectiveScale) || 1));
 
@@ -516,11 +530,11 @@ function calculateTokenVerticalAlignOffsetY(token, mesh, state, perspectiveScale
   return (0.5 - align) * (logicalHeight - artHeight);
 }
 
-function applyTokenVerticalAlignment(token, mesh, state, perspectiveScale, config) {
+function applyTokenVerticalAlignment(token, mesh, state, perspectiveScale, config, rect = getSceneRect()) {
   const baseAnchorY = updateTokenBaseMeshAnchorY(mesh, state);
   if (baseAnchorY === null) return;
 
-  const offsetY = calculateTokenVerticalAlignOffsetY(token, mesh, state, perspectiveScale, config);
+  const offsetY = calculateTokenVerticalAlignOffsetY(token, mesh, state, perspectiveScale, config, rect);
   const textureHeight = getTextureDimension(mesh, "y");
   const artHeight = Math.abs((Number(textureHeight) || 0) * (Number(state?.baseScaleY) || 0) * (Number(perspectiveScale) || 1));
   if (!Number.isFinite(artHeight) || artHeight <= 0.0001) return;
@@ -532,8 +546,7 @@ function applyTokenVerticalAlignment(token, mesh, state, perspectiveScale, confi
   }
 }
 
-function getTokenVisualBottomPoint(token) {
-  const rect = getSceneRect();
+function getTokenVisualBottomPoint(token, rect = getSceneRect()) {
   const x = Number(token.position?.x ?? token.x ?? token.document?.x ?? 0) || 0;
   const y = Number(token.position?.y ?? token.y ?? token.document?.y ?? 0) || 0;
   const w = Number(token.w ?? ((token.document?.width || 1) * rect.gridSize) ?? rect.gridSize) || rect.gridSize;
@@ -545,9 +558,8 @@ function getTokenVisualBottomPoint(token) {
   };
 }
 
-export function getTokenGroundPoint(token) {
-  const config = getLevelConfig();
-  return screenPointToElevationGroundPoint(getTokenVisualBottomPoint(token), config, getSceneRect());
+export function getTokenGroundPoint(token, config = getLevelConfig(), rect = getSceneRect(), model = null) {
+  return screenPointToElevationGroundPoint(getTokenVisualBottomPoint(token, rect), config, rect, model);
 }
 
 export function getTokenGroundY(token) {
@@ -672,9 +684,9 @@ function getTokenSortProxy(token) {
   return token;
 }
 
-function getPerspectiveTokenDepthSortValue(token, config) {
+function getPerspectiveTokenDepthSortValue(token, config, rect = getSceneRect(), model = null) {
   const proxy = getTokenSortProxy(token);
-  const coords = screenPointToPerspectiveGrid(getTokenVisualBottomPoint(proxy), config, getSceneRect());
+  const coords = screenPointToPerspectiveGrid(getTokenVisualBottomPoint(proxy, rect), config, rect, model);
 
   const depthCells = Number.isFinite(Number(coords?.j)) ? Number(coords.j) : 0;
 
@@ -691,12 +703,8 @@ function getPerspectiveSortableTokens(config = getLevelConfig()) {
     .filter(token => isTokenObject(token) && !token.destroyed && token.document?.id && tokenBelongsToActiveLevel(token));
 }
 
-function buildPerspectiveSortSnapshot(config = getLevelConfig()) {
-  const tokens = getPerspectiveSortableTokens(config);
-  if (!tokens.length) return { entries: [], signature: "" };
-
-  const entries = tokens
-    .map(token => ({ token, depth: getPerspectiveTokenDepthSortValue(token, config) }))
+function buildPerspectiveSortEntriesFromCache() {
+  const entries = [...PERSPECTIVE_SORT_CACHE.values()]
     .sort((a, b) => (a.depth - b.depth) || String(a.token.document.id).localeCompare(String(b.token.document.id)))
     .map((entry, index) => ({
       ...entry,
@@ -705,6 +713,74 @@ function buildPerspectiveSortSnapshot(config = getLevelConfig()) {
 
   const signature = entries.map(entry => `${entry.token.document.id}:${entry.sort}`).join("|");
   return { entries, signature };
+}
+
+function rebuildPerspectiveSortCache(tokens, config, rect = getSceneRect(), model = null) {
+  PERSPECTIVE_SORT_CACHE.clear();
+  for (const token of tokens) {
+    const key = getTokenSortCacheKey(token);
+    if (!key) continue;
+    PERSPECTIVE_SORT_CACHE.set(key, {
+      token,
+      depth: getPerspectiveTokenDepthSortValue(token, config, rect, model)
+    });
+  }
+}
+
+function isPerspectiveSortCacheCurrent(tokens) {
+  if (PERSPECTIVE_SORT_CACHE.size !== tokens.length) return false;
+  for (const token of tokens) {
+    const key = getTokenSortCacheKey(token);
+    if (!key || PERSPECTIVE_SORT_CACHE.get(key)?.token !== token) return false;
+  }
+  return true;
+}
+
+function buildPerspectiveSortSnapshot(config = getLevelConfig()) {
+  const tokens = getPerspectiveSortableTokens(config);
+  if (!tokens.length) {
+    PERSPECTIVE_SORT_CACHE.clear();
+    return { entries: [], signature: "" };
+  }
+
+  const rect = getSceneRect();
+  const model = getPerspectiveGridModel(config, rect);
+  rebuildPerspectiveSortCache(tokens, config, rect, model);
+  return buildPerspectiveSortEntriesFromCache();
+}
+
+function buildIncrementalPerspectiveSortSnapshot(config, dirtyTokens) {
+  const tokens = getPerspectiveSortableTokens(config);
+  if (!tokens.length) {
+    PERSPECTIVE_SORT_CACHE.clear();
+    return { entries: [], signature: "" };
+  }
+
+  const rect = getSceneRect();
+  const model = getPerspectiveGridModel(config, rect);
+  if (!isPerspectiveSortCacheCurrent(tokens)) {
+    rebuildPerspectiveSortCache(tokens, config, rect, model);
+    return buildPerspectiveSortEntriesFromCache();
+  }
+
+  const sortableByKey = new Map(tokens.map(token => [getTokenSortCacheKey(token), token]));
+  for (const dirtyToken of dirtyTokens) {
+    const key = getTokenSortCacheKey(dirtyToken);
+    if (!key) continue;
+
+    const token = sortableByKey.get(key);
+    if (!token || token.destroyed || !tokenBelongsToActiveLevel(token)) {
+      PERSPECTIVE_SORT_CACHE.delete(key);
+      continue;
+    }
+
+    PERSPECTIVE_SORT_CACHE.set(key, {
+      token,
+      depth: getPerspectiveTokenDepthSortValue(token, config, rect, model)
+    });
+  }
+
+  return buildPerspectiveSortEntriesFromCache();
 }
 
 function markFoundrySortDirty(token) {
@@ -733,13 +809,13 @@ function markFoundrySortDirty(token) {
   applyTokenRenderElevation(token);
 }
 
-function applyTokenDocumentSortLocally(token, sort) {
+function applyTokenDocumentSortLocally(token, sort, { markIfSame = true } = {}) {
   const document = token?.document;
   if (!document) return false;
 
   const current = Number(document.sort ?? 0);
   if (Number.isFinite(current) && current === sort) {
-    markFoundrySortDirty(token);
+    if (markIfSame) markFoundrySortDirty(token);
     return false;
   }
 
@@ -758,16 +834,28 @@ function applyTokenDocumentSortLocally(token, sort) {
   return true;
 }
 
-function applyPerspectiveSortNow(config = getLevelConfig(), { persist = false } = {}) {
-  if (!config?.enabled) return null;
-  const snapshot = buildPerspectiveSortSnapshot(config);
-  if (!snapshot.entries.length) return snapshot;
+function applyPerspectiveSortNow(config = getLevelConfig(), { persist = false, force = false, dirtyTokens = [] } = {}) {
+  if (!config?.enabled) {
+    PERSPECTIVE_SORT_CACHE.clear();
+    LAST_LOCAL_SORT_SIGNATURE = "";
+    return null;
+  }
+  const scopedDirtyTokens = [...dirtyTokens].filter(token => isTokenObject(token) && !token.destroyed);
+  const fullRebuild = force || !scopedDirtyTokens.length;
+  const snapshot = fullRebuild
+    ? buildPerspectiveSortSnapshot(config)
+    : buildIncrementalPerspectiveSortSnapshot(config, scopedDirtyTokens);
+  if (!snapshot.entries.length) {
+    LAST_LOCAL_SORT_SIGNATURE = "";
+    return snapshot;
+  }
 
   if (snapshot.signature !== LAST_LOCAL_SORT_SIGNATURE) {
-    for (const entry of snapshot.entries) applyTokenDocumentSortLocally(entry.token, entry.sort);
+    for (const entry of snapshot.entries) applyTokenDocumentSortLocally(entry.token, entry.sort, { markIfSame: fullRebuild });
     LAST_LOCAL_SORT_SIGNATURE = snapshot.signature;
   } else {
-    for (const entry of snapshot.entries) markFoundrySortDirty(entry.token);
+    const tokensToMark = fullRebuild ? snapshot.entries.map(entry => entry.token) : scopedDirtyTokens;
+    for (const token of tokensToMark) markFoundrySortDirty(token);
   }
 
   if (persist) persistPerspectiveSortSnapshot(snapshot);
@@ -810,11 +898,22 @@ async function persistPerspectiveSortSnapshot(snapshot) {
 function flushPerspectiveSort() {
   PERSPECTIVE_SORT_RAF = null;
   const persist = PERSPECTIVE_SORT_PERSIST_REQUESTED;
+  const force = PERSPECTIVE_SORT_FORCE_FULL;
+  const dirtyTokens = [...PERSPECTIVE_SORT_DIRTY_TOKENS];
   PERSPECTIVE_SORT_PERSIST_REQUESTED = false;
-  applyPerspectiveSortNow(getLevelConfig(), { persist });
+  PERSPECTIVE_SORT_FORCE_FULL = false;
+  PERSPECTIVE_SORT_DIRTY_TOKENS.clear();
+  applyPerspectiveSortNow(getLevelConfig(), { persist, force, dirtyTokens });
 }
 
-export function schedulePerspectiveSort({ persist = false, debounce = false } = {}) {
+function addPerspectiveSortToken(token) {
+  if (!token || token.destroyed) return;
+  PERSPECTIVE_SORT_DIRTY_TOKENS.add(token);
+  const original = token?._original;
+  if (original && original !== token && !original.destroyed) PERSPECTIVE_SORT_DIRTY_TOKENS.add(original);
+}
+
+export function schedulePerspectiveSort({ persist = false, debounce = false, token = null, tokens = null, force = false } = {}) {
   persist = Boolean(persist && canPersistSceneTokenSort());
   if (debounce && persist) {
     if (PERSPECTIVE_SORT_PERSIST_TIMEOUT) globalThis.clearTimeout(PERSPECTIVE_SORT_PERSIST_TIMEOUT);
@@ -826,6 +925,11 @@ export function schedulePerspectiveSort({ persist = false, debounce = false } = 
   }
 
   PERSPECTIVE_SORT_PERSIST_REQUESTED ||= persist;
+  if (force || (!token && !tokens)) PERSPECTIVE_SORT_FORCE_FULL = true;
+  if (token) addPerspectiveSortToken(token);
+  if (tokens) {
+    for (const entry of tokens) addPerspectiveSortToken(entry);
+  }
 
   if (PERSPECTIVE_SORT_RAF) return;
   const raf = globalThis.requestAnimationFrame ?? ((fn) => globalThis.setTimeout(fn, 16));
@@ -837,13 +941,21 @@ export function clearPerspectiveSortState() {
   LAST_PERSISTED_SORT_SIGNATURE = "";
   PERSPECTIVE_SORT_PERSIST_REQUESTED = false;
   PERSPECTIVE_SORT_PERSIST_AGAIN = false;
+  PERSPECTIVE_SORT_FORCE_FULL = true;
+  PERSPECTIVE_SORT_DIRTY_TOKENS.clear();
+  PERSPECTIVE_SORT_CACHE.clear();
+  if (PERSPECTIVE_SORT_RAF) {
+    const caf = globalThis.cancelAnimationFrame ?? globalThis.clearTimeout;
+    try { caf(PERSPECTIVE_SORT_RAF); } catch (_err) { /* noop */ }
+    PERSPECTIVE_SORT_RAF = null;
+  }
   if (PERSPECTIVE_SORT_PERSIST_TIMEOUT) {
     globalThis.clearTimeout(PERSPECTIVE_SORT_PERSIST_TIMEOUT);
     PERSPECTIVE_SORT_PERSIST_TIMEOUT = null;
   }
 }
 
-export function applyPerspectiveToToken(token) {
+export function applyPerspectiveToToken(token, { scheduleSort = true } = {}) {
   if (!isTokenObject(token) || token.destroyed) return;
 
   const config = getLevelConfig();
@@ -858,38 +970,46 @@ export function applyPerspectiveToToken(token) {
     restoreTokenBaseScale(token);
     applyTokenRenderElevation(token);
     destroyFlightShadow(token, ORIGINAL_TOKEN_STATE.get(token));
-    schedulePerspectiveSort();
+    if (scheduleSort) schedulePerspectiveSort({ token });
     return;
   }
 
   if (!mesh || mesh.destroyed) {
     destroyFlightShadow(token, ORIGINAL_TOKEN_STATE.get(token));
-    schedulePerspectiveSort();
+    if (scheduleSort) schedulePerspectiveSort({ token });
     return;
   }
 
-  const state = getTokenState(token, mesh);
+  const rect = getSceneRect();
+  const state = getTokenState(token, mesh, rect);
   if (state.baseSource === "document") TOKEN_BASE_RETRY_COUNT.delete(token);
   else scheduleBaseScaleRetry(token);
 
   const tokenScaleMultiplier = clamp(config.tokenScaleMultiplier ?? 1, 0.05, 8);
-  const scale = scaleForPerspectiveToken(getTokenGroundPoint(token), config) * tokenScaleMultiplier;
+  const model = getPerspectiveGridModel(config, rect);
+  const ground = getTokenGroundPoint(token, config, rect, model);
+  const scale = scaleForPerspectiveToken(ground, config, rect, model) * tokenScaleMultiplier;
 
   mesh.scale.set(state.baseScaleX * scale, state.baseScaleY * scale);
   applyTokenRenderElevation(token);
-  applyTokenVerticalAlignment(token, mesh, state, scale, config);
+  applyTokenVerticalAlignment(token, mesh, state, scale, config, rect);
   mesh._perspectiveLevelsAppliedScale = scale;
   state.lastPerspectiveScale = scale;
-  updateFlightShadow(token, state, scale, config);
+  updateFlightShadow(token, state, scale, config, rect, model);
 
-  schedulePerspectiveSort();
+  if (scheduleSort) schedulePerspectiveSort({ token });
 }
 
 export function refreshTokens() {
+  const tokens = [];
   forEachToken(token => {
-    try { applyPerspectiveToToken(token); }
+    try {
+      applyPerspectiveToToken(token, { scheduleSort: false });
+      tokens.push(token);
+    }
     catch (err) { console.warn(`${MODULE_ID} | Failed to update token perspective`, err); }
   });
+  if (tokens.length) schedulePerspectiveSort({ tokens, force: true });
 }
 
 export function clearTokenScaleState() {
