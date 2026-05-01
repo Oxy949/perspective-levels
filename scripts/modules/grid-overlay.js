@@ -8,6 +8,7 @@ export class PerspectiveGridOverlay {
     this.container = null;
     this.grid = null;
     this.parent = null;
+    this.forceVisible = false;
     this._lastLevelId = null;
     this._ticker = this._ticker.bind(this);
   }
@@ -132,7 +133,7 @@ export class PerspectiveGridOverlay {
     if (!this.ensure()) return;
 
     const config = getLevelConfig(globalThis.canvas?.level);
-    this.container.visible = Boolean(config.enabled && config.grid);
+    this.container.visible = Boolean(config.enabled && (config.grid || this.forceVisible));
     this.grid.clear();
     if (!this.container.visible) return;
 

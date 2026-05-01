@@ -39,7 +39,10 @@ import {
 export const gridOverlay = new PerspectiveGridOverlay();
 export const calibrator = new PerspectiveCalibrator({
   refresh: refreshAll,
-  drawGrid: () => gridOverlay.draw()
+  drawGrid: () => {
+    gridOverlay.forceVisible = calibrator.active;
+    gridOverlay.draw();
+  }
 });
 
 let hooksRegistered = false;
@@ -251,6 +254,7 @@ function clearTokenStatusIconRefreshState() {
 gridOverlay.onLevelChange = () => refreshAll();
 
 function refreshOverlays() {
+  gridOverlay.forceVisible = calibrator.active;
   gridOverlay.draw();
   if (calibrator.active) calibrator.redraw();
 }

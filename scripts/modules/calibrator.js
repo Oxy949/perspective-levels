@@ -1,4 +1,4 @@
-import { getLevelConfig, normalizeConfig, setLevelConfig } from "./config.js";
+import { clearLevelConfigOverride, getLevelConfig, normalizeConfig, setLevelConfig, setLevelConfigOverride } from "./config.js";
 import { anchorToPoint, getPerspectiveGridModel, pointToAnchor } from "./projection.js";
 import { getSceneRect } from "./scene.js";
 import { clamp, i18n, i18nFormat } from "./utils.js";
@@ -14,6 +14,8 @@ function round4(value) {
   return Number(n.toFixed(4));
 }
 
+const AUTO_SAVE_DEBOUNCE_MS = 350;
+
 export class PerspectiveCalibrator {
   constructor({ refresh = () => {}, drawGrid = () => {} } = {}) {
     this.level = null;
@@ -24,6 +26,10 @@ export class PerspectiveCalibrator {
     this.dragging = null;
     this.refresh = refresh;
     this.drawGrid = drawGrid;
+    this._autoSaveTimer = null;
+    this._pendingAutoSave = null;
+    this._autoSaveInFlight = false;
+    this._autoSaveAgain = false;
   }
 
   get active() {
@@ -40,7 +46,7 @@ export class PerspectiveCalibrator {
     this.level = canvas.level;
     this.config = getLevelConfig(this.level);
     this.config.enabled = true;
-    this.config.grid = true;
+    setLevelConfigOverride(this.level, this.config);
 
     this.container = new PIXI.Container();
     this.container.name = "PerspectiveLevels.Calibrator";
@@ -61,10 +67,12 @@ export class PerspectiveCalibrator {
 
     this._createPanel();
     this.redraw();
-    this.refresh();
+    this._applyConfigChange({ autosave: true, redraw: false });
   }
 
   close(refresh = true) {
+    this._flushAutoSave();
+    const level = this.level;
     if (this.container && !this.container.destroyed) this.container.destroy({ children: true });
     this.container = null;
     this.anchors = {};
@@ -72,6 +80,7 @@ export class PerspectiveCalibrator {
     this.level = null;
     if (this.panel) this.panel.remove();
     this.panel = null;
+    clearLevelConfigOverride(level);
     if (refresh) this.refresh();
   }
 
@@ -80,18 +89,74 @@ export class PerspectiveCalibrator {
     else this.open();
   }
 
-  async save() {
+  async save({ notify = true } = {}) {
     if (!this.level || !this.config) return;
+    this._clearAutoSaveTimer();
+    this._pendingAutoSave = null;
     await setLevelConfig(this.level, this.config);
-    ui.notifications?.info(i18nFormat("PERSPECTIVE_LEVELS.SavedToLevel", { level: this.level.name }));
+    if (notify) ui.notifications?.info(i18nFormat("PERSPECTIVE_LEVELS.SavedToLevel", { level: this.level.name }));
     this.refresh();
   }
 
   reset() {
     this.config = normalizeConfig({ enabled: true });
-    this._syncPanelFromConfig();
-    this.redraw();
+    this._applyConfigChange({ autosave: true, syncPanel: true });
+  }
+
+  _clearAutoSaveTimer() {
+    if (!this._autoSaveTimer) return;
+    globalThis.clearTimeout(this._autoSaveTimer);
+    this._autoSaveTimer = null;
+  }
+
+  _applyConfigChange({ autosave = true, redraw = true, syncPanel = false } = {}) {
+    if (!this.level || !this.config) return;
+    this.config = normalizeConfig(this.config);
+    setLevelConfigOverride(this.level, this.config);
+    if (syncPanel) this._syncPanelFromConfig();
+    if (redraw) this.redraw();
     this.refresh();
+    if (autosave) this._scheduleAutoSave();
+  }
+
+  _scheduleAutoSave() {
+    if (!this.level || !this.config) return;
+    this._pendingAutoSave = {
+      level: this.level,
+      config: normalizeConfig(this.config)
+    };
+
+    this._clearAutoSaveTimer();
+    this._autoSaveTimer = globalThis.setTimeout(() => {
+      this._autoSaveTimer = null;
+      this._flushAutoSave();
+    }, AUTO_SAVE_DEBOUNCE_MS);
+  }
+
+  async _flushAutoSave() {
+    this._clearAutoSaveTimer();
+
+    if (this._autoSaveInFlight) {
+      this._autoSaveAgain = true;
+      return;
+    }
+
+    const pending = this._pendingAutoSave;
+    this._pendingAutoSave = null;
+    if (!pending?.level || !pending.config) return;
+
+    this._autoSaveInFlight = true;
+    try {
+      await setLevelConfig(pending.level, pending.config);
+    } catch (err) {
+      console.warn("perspective-levels | Failed to auto-save calibration", err);
+    } finally {
+      this._autoSaveInFlight = false;
+      if (this._pendingAutoSave || this._autoSaveAgain) {
+        this._autoSaveAgain = false;
+        this._flushAutoSave();
+      }
+    }
   }
 
   _createAnchor(key, label, color) {
@@ -137,9 +202,7 @@ export class PerspectiveCalibrator {
   _rotateAnchor(key, delta) {
     if (!this.config?.[key]) return;
     this.config[key].rotation = round4(normalizeRotation((Number(this.config[key].rotation) || 0) + delta));
-    this._syncPanelFromConfig();
-    this.redraw();
-    this.refresh();
+    this._applyConfigChange({ autosave: true, syncPanel: true });
   }
 
   _onPointerMove(event) {
@@ -149,8 +212,7 @@ export class PerspectiveCalibrator {
     const normalized = pointToAnchor(point, getSceneRect());
     this.config[this.dragging].x = Number(normalized.x.toFixed(4));
     this.config[this.dragging].y = Number(normalized.y.toFixed(4));
-    this.redraw();
-    this.refresh();
+    this._applyConfigChange({ autosave: true });
   }
 
   _stopDrag() {
@@ -188,37 +250,31 @@ export class PerspectiveCalibrator {
       input.addEventListener("input", event => {
         const key = event.currentTarget.dataset.plScale;
         this.config[key].scale = clamp(event.currentTarget.value, 0.05, 4);
-        this.redraw();
-        this.refresh();
+        this._applyConfigChange({ autosave: true });
       });
     });
     div.querySelectorAll("input[data-pl-rotation]").forEach(input => {
       input.addEventListener("input", event => {
         const key = event.currentTarget.dataset.plRotation;
         this.config[key].rotation = normalizeRotation(event.currentTarget.value);
-        this.redraw();
-        this.refresh();
+        this._applyConfigChange({ autosave: true });
       });
     });
     div.querySelector("input[data-pl-curve]")?.addEventListener("input", event => {
       this.config.curve = clamp(event.currentTarget.value, 0.4, 4);
-      this.redraw();
-      this.refresh();
+      this._applyConfigChange({ autosave: true });
     });
     div.querySelector("input[data-pl-grid-scale]")?.addEventListener("input", event => {
       this.config.gridScale = clamp(event.currentTarget.value, 0.1, 8);
-      this.redraw();
-      this.refresh();
+      this._applyConfigChange({ autosave: true });
     });
     div.querySelector("input[data-pl-scene-depth]")?.addEventListener("input", event => {
       this.config.sceneDepthCells = Math.round(clamp(event.currentTarget.value, 1, 200));
-      this.redraw();
-      this.refresh();
+      this._applyConfigChange({ autosave: true });
     });
     div.querySelector("input[data-pl-token-scale]")?.addEventListener("input", event => {
       this.config.tokenScaleMultiplier = clamp(event.currentTarget.value, 0.05, 8);
-      this.redraw();
-      this.refresh();
+      this._applyConfigChange({ autosave: true });
     });
     div.querySelector("[data-pl-action='save']")?.addEventListener("click", () => this.save());
     div.querySelector("[data-pl-action='reset']")?.addEventListener("click", () => this.reset());

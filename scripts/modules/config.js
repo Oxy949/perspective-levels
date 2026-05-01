@@ -1,6 +1,8 @@
 import { DEFAULT_CONFIG, FLAG, MODULE_ID } from "./constants.js";
 import { asBool, clamp, normalizeHexColor } from "./utils.js";
 
+let activeLevelConfigOverride = null;
+
 export function cloneDefaultConfig() {
   if (globalThis.foundry?.utils?.deepClone) return globalThis.foundry.utils.deepClone(DEFAULT_CONFIG);
   return JSON.parse(JSON.stringify(DEFAULT_CONFIG));
@@ -73,7 +75,41 @@ export function normalizeConfig(config = {}) {
   return merged;
 }
 
+function getLevelIdentity(level) {
+  return level?.uuid
+    ?? level?.id
+    ?? level?._id
+    ?? null;
+}
+
+function isSameLevel(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+
+  const aId = getLevelIdentity(a);
+  const bId = getLevelIdentity(b);
+  return Boolean(aId && bId && String(aId) === String(bId));
+}
+
+export function setLevelConfigOverride(level, config) {
+  if (!level) return;
+  activeLevelConfigOverride = {
+    level,
+    config: normalizeConfig(config)
+  };
+}
+
+export function clearLevelConfigOverride(level = null) {
+  if (!activeLevelConfigOverride) return;
+  if (level && !isSameLevel(level, activeLevelConfigOverride.level)) return;
+  activeLevelConfigOverride = null;
+}
+
 export function getLevelConfig(level = globalThis.canvas?.level) {
+  if (level && activeLevelConfigOverride && isSameLevel(level, activeLevelConfigOverride.level)) {
+    return normalizeConfig(activeLevelConfigOverride.config);
+  }
+
   if (!level) return normalizeConfig();
   return normalizeConfig(level.getFlag(MODULE_ID, FLAG) ?? {});
 }
