@@ -241,9 +241,10 @@ function computeFlightElevationFromY(state, y) {
   const delta = -(dy / Math.max(1, state.pxPerGridDistance)) * Math.max(0.0001, state.gridDistance);
   let elevation = state.startElevation + delta;
 
-  // Для обычного полёта над сеткой не даём случайно уйти ниже пола, но если токен
-  // уже был на отрицательной высоте — сохраняем Foundry-совместимое поведение.
-  if (state.startElevation >= 0) elevation = Math.max(0, elevation);
+  // Shift drag can leave zero in either direction, but a token that started
+  // above or below zero should not cross the ground plane in the same drag.
+  if (state.startElevation > 0.0001) elevation = Math.max(0, elevation);
+  else if (state.startElevation < -0.0001) elevation = Math.min(0, elevation);
   return Math.round((elevation + Number.EPSILON) * 1000) / 1000;
 }
 

@@ -398,6 +398,7 @@ export function removePerspectiveFromToken(token) {
   const state = ORIGINAL_TOKEN_STATE.get(token);
   if (!state) {
     cleanupTokenVisuals(token, null);
+    restoreTokenRenderElevation(token);
     const documentKey = getTokenDocumentKey(token);
     if (documentKey) TOKEN_BASE_SCALE_BY_DOCUMENT.delete(documentKey);
     if (token?.mesh) {
@@ -413,6 +414,7 @@ export function removePerspectiveFromToken(token) {
       restoreTokenBaseMeshAnchor(token, state);
       delete token.mesh._perspectiveLevelsAppliedScale;
     }
+    restoreTokenRenderElevation(token);
     cleanupTokenVisuals(token, state);
   } finally {
     ORIGINAL_TOKEN_STATE.delete(token);
@@ -557,6 +559,32 @@ function getTokenElevation(token) {
   return Number.isFinite(elevation) ? elevation : 0;
 }
 
+function getTokenRenderElevation(token) {
+  return Math.max(0, getTokenElevation(token));
+}
+
+function applyTokenRenderElevation(token) {
+  const mesh = token?.mesh;
+  if (!mesh || mesh.destroyed) return;
+
+  const elevation = getTokenRenderElevation(token);
+  for (const object of [mesh, mesh.primary, mesh.object, mesh.pixiObject]) {
+    if (!object || object.destroyed) continue;
+    try { object.elevation = elevation; } catch (_err) { /* noop */ }
+  }
+}
+
+function restoreTokenRenderElevation(token) {
+  const mesh = token?.mesh;
+  if (!mesh || mesh.destroyed) return;
+
+  const elevation = getTokenElevation(token);
+  for (const object of [mesh, mesh.primary, mesh.object, mesh.pixiObject]) {
+    if (!object || object.destroyed) continue;
+    try { object.elevation = elevation; } catch (_err) { /* noop */ }
+  }
+}
+
 function stableTokenTieBreaker(token) {
   const id = String(token?.document?.id ?? token?.id ?? "");
   let hash = 0;
@@ -680,6 +708,8 @@ function buildPerspectiveSortSnapshot(config = getLevelConfig()) {
 }
 
 function markFoundrySortDirty(token) {
+  applyTokenRenderElevation(token);
+
   const objects = [
     token,
     token?.mesh,
@@ -697,8 +727,10 @@ function markFoundrySortDirty(token) {
 
   try { token?.renderFlags?.set?.({ refreshElevation: true }); } catch (_err) { /* noop */ }
   try { token?.applyRenderFlags?.(); } catch (_err) { /* noop */ }
+  applyTokenRenderElevation(token);
   try { token?.layer?.objects?.sortChildren?.(); } catch (_err) { /* noop */ }
   try { globalThis.canvas?.primary?.sortChildren?.(); } catch (_err) { /* noop */ }
+  applyTokenRenderElevation(token);
 }
 
 function applyTokenDocumentSortLocally(token, sort) {
@@ -720,6 +752,7 @@ function applyTokenDocumentSortLocally(token, sort) {
   // Не ставим token.zIndex: Foundry сортирует токены через TokenDocument.sort,
   // тот же механизм используется кнопкой HUD «расположить выше/ниже».
   try { if (token.mesh) token.mesh.sort = sort; } catch (_err) { /* noop */ }
+  applyTokenRenderElevation(token);
   placeFlightShadowBelowToken(token, ORIGINAL_TOKEN_STATE.get(token));
   markFoundrySortDirty(token);
   return true;
@@ -823,6 +856,7 @@ export function applyPerspectiveToToken(token) {
 
   if (!config.tokenScaling) {
     restoreTokenBaseScale(token);
+    applyTokenRenderElevation(token);
     destroyFlightShadow(token, ORIGINAL_TOKEN_STATE.get(token));
     schedulePerspectiveSort();
     return;
@@ -842,6 +876,7 @@ export function applyPerspectiveToToken(token) {
   const scale = scaleForPerspectiveToken(getTokenGroundPoint(token), config) * tokenScaleMultiplier;
 
   mesh.scale.set(state.baseScaleX * scale, state.baseScaleY * scale);
+  applyTokenRenderElevation(token);
   applyTokenVerticalAlignment(token, mesh, state, scale, config);
   mesh._perspectiveLevelsAppliedScale = scale;
   state.lastPerspectiveScale = scale;
