@@ -32,5 +32,10 @@
   "PERSPECTIVE_LEVELS.GridCellScale": "Масштаб клетки сетки",
   "PERSPECTIVE_LEVELS.SceneDepthCells": "Глубина сцены, клеток",
   "PERSPECTIVE_LEVELS.TokenSizeMultiplier": "Множитель размера токенов",
-  "PERSPECTIVE_LEVELS.ToolbarCalibrator": "Perspective Levels: калибровка уровня"
+  "PERSPECTIVE_LEVELS.ToolbarCalibrator": "Perspective Levels: калибровка уровня",
+  "PERSPECTIVE_LEVELS.CopyGridSettings": "Копировать параметры сетки",
+  "PERSPECTIVE_LEVELS.PasteGridSettings": "Вставить параметры сетки",
+  "PERSPECTIVE_LEVELS.GridSettingsCopied": "Параметры сетки скопированы",
+  "PERSPECTIVE_LEVELS.GridSettingsPasted": "Параметры сетки вставлены",
+  "PERSPECTIVE_LEVELS.InvalidGridSettings": "Неверный формат параметров сетки"
 }

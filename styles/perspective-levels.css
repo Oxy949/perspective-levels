@@ -117,6 +117,23 @@
   margin-block-start: 0.75rem;
 }
 
+.perspective-levels-grid-clipboard-buttons {
+  display: flex;
+  gap: 0.5rem;
+  margin-block-start: 0.75rem;
+  justify-content: flex-end;
+}
+
+.perspective-levels-copy-settings,
+.perspective-levels-paste-settings {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
 .perspective-levels-config .hint {
   margin: 0.5rem 0 0;
   opacity: 0.85;

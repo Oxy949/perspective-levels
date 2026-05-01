@@ -39,6 +39,51 @@ function getBooleanControlValue(root, path) {
   return root.querySelector(`input[type='checkbox'][data-perspective-levels-boolean='${path}']`)?.checked ?? false;
 }
 
+function extractGridSettings(form) {
+  const fieldMap = {
+    "gridColor": v => v,
+    "gridAlpha": v => Number(v),
+    "gridLineWidth": v => Number(v),
+    "gridScale": v => Number(v),
+    "sceneDepthCells": v => Number(v),
+    "tokenScaleMultiplier": v => Number(v),
+    "tokenArtVerticalAlign": v => Number(v),
+    "far.x": v => Number(v),
+    "far.y": v => Number(v),
+    "far.scale": v => Number(v),
+    "far.rotation": v => Number(v),
+    "near.x": v => Number(v),
+    "near.y": v => Number(v),
+    "near.scale": v => Number(v),
+    "near.rotation": v => Number(v),
+    "curve": v => Number(v)
+  };
+  
+  const settings = {};
+  for (const [key, converter] of Object.entries(fieldMap)) {
+    const input = form.querySelector(`input[name="${fieldName(key)}"]`);
+    if (input && input.value !== "") {
+      settings[key] = converter(input.value);
+    }
+  }
+  return settings;
+}
+
+function applyGridSettings(form, settings) {
+  if (!settings || typeof settings !== "object") {
+    return false;
+  }
+  
+  for (const [key, value] of Object.entries(settings)) {
+    const input = form.querySelector(`input[name="${fieldName(key)}"]`);
+    if (input) {
+      input.value = value;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  }
+  return true;
+}
+
 function syncVisibilityState(root) {
   root.dataset.perspectiveEnabled = getBooleanControlValue(root, "enabled") ? "true" : "false";
   root.dataset.perspectiveGridEnabled = getBooleanControlValue(root, "grid") ? "true" : "false";
@@ -191,6 +236,14 @@ export function injectLevelConfig(app, html, { openCalibrator } = {}) {
             <label data-perspective-levels-token-content>${i18n("PERSPECTIVE_LEVELS.TokenMultiplier")} <input type="number" name="${fieldName("tokenScaleMultiplier")}" value="${formatNumber(cfg.tokenScaleMultiplier)}" min="0.05" max="8" step="any"></label>
             <label data-perspective-levels-token-content>${i18n("PERSPECTIVE_LEVELS.TokenArtVerticalAlign")} <input type="number" name="${fieldName("tokenArtVerticalAlign")}" value="${formatNumber(cfg.tokenArtVerticalAlign)}" min="0" max="1" step="any"></label>
           </div>
+          <div class="perspective-levels-grid-clipboard-buttons">
+            <button type="button" class="perspective-levels-copy-settings" title="${i18n("PERSPECTIVE_LEVELS.CopyGridSettings")}">
+              <i class="fa-solid fa-copy"></i> ${i18n("PERSPECTIVE_LEVELS.CopyGridSettings")}
+            </button>
+            <button type="button" class="perspective-levels-paste-settings" title="${i18n("PERSPECTIVE_LEVELS.PasteGridSettings")}">
+              <i class="fa-solid fa-paste"></i> ${i18n("PERSPECTIVE_LEVELS.PasteGridSettings")}
+            </button>
+          </div>
         </div>
 
         <div class="perspective-levels-section">
@@ -238,5 +291,37 @@ export function injectLevelConfig(app, html, { openCalibrator } = {}) {
       return;
     }
     openCalibrator?.();
+  });
+
+  block.querySelector(".perspective-levels-copy-settings")?.addEventListener("click", event => {
+    event.preventDefault();
+    const settings = extractGridSettings(form);
+    const jsonStr = JSON.stringify(settings);
+    navigator.clipboard.writeText(jsonStr).then(() => {
+      ui.notifications?.info(i18n("PERSPECTIVE_LEVELS.GridSettingsCopied"));
+    }).catch(err => {
+      console.error("Failed to copy settings:", err);
+      ui.notifications?.error(i18n("PERSPECTIVE_LEVELS.GridSettingsCopied"));
+    });
+  });
+
+  block.querySelector(".perspective-levels-paste-settings")?.addEventListener("click", event => {
+    event.preventDefault();
+    navigator.clipboard.readText().then(text => {
+      try {
+        const settings = JSON.parse(text);
+        if (applyGridSettings(form, settings)) {
+          ui.notifications?.info(i18n("PERSPECTIVE_LEVELS.GridSettingsPasted"));
+        } else {
+          ui.notifications?.error(i18n("PERSPECTIVE_LEVELS.InvalidGridSettings"));
+        }
+      } catch (err) {
+        console.error("Failed to parse settings:", err);
+        ui.notifications?.error(i18n("PERSPECTIVE_LEVELS.InvalidGridSettings"));
+      }
+    }).catch(err => {
+      console.error("Failed to read clipboard:", err);
+      ui.notifications?.error(i18n("PERSPECTIVE_LEVELS.InvalidGridSettings"));
+    });
   });
 }

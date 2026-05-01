@@ -32,5 +32,10 @@
   "PERSPECTIVE_LEVELS.GridCellScale": "Grid Cell Scale",
   "PERSPECTIVE_LEVELS.SceneDepthCells": "Scene Depth, Cells",
   "PERSPECTIVE_LEVELS.TokenSizeMultiplier": "Token Size Multiplier",
-  "PERSPECTIVE_LEVELS.ToolbarCalibrator": "Perspective Levels: Level Calibration"
+  "PERSPECTIVE_LEVELS.ToolbarCalibrator": "Perspective Levels: Level Calibration",
+  "PERSPECTIVE_LEVELS.CopyGridSettings": "Copy Grid Settings",
+  "PERSPECTIVE_LEVELS.PasteGridSettings": "Paste Grid Settings",
+  "PERSPECTIVE_LEVELS.GridSettingsCopied": "Grid settings copied to clipboard",
+  "PERSPECTIVE_LEVELS.GridSettingsPasted": "Grid settings pasted",
+  "PERSPECTIVE_LEVELS.InvalidGridSettings": "Invalid grid settings format"
 }
