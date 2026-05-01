@@ -104,6 +104,26 @@ function schedulePerspectiveUpdate(token) {
   PENDING_PERSPECTIVE_RAF = raf(flushPerspectiveUpdates);
 }
 
+function applyPerspectiveUpdateNow(token) {
+  const config = getLevelConfig();
+  if (!isPerspectiveEnabled(config)) return false;
+
+  applyPerspectiveToToken(token);
+  for (const preview of collectTokenAndDragPreviews(token)) {
+    if (preview !== token) applyPerspectiveToToken(preview);
+  }
+  return true;
+}
+
+function applyOrSchedulePerspectiveUpdate(token) {
+  try {
+    if (!applyPerspectiveUpdateNow(token)) schedulePerspectiveUpdate(token);
+  } catch (err) {
+    console.warn(`${MODULE_ID} | Failed to update token perspective immediately`, err);
+    schedulePerspectiveUpdate(token);
+  }
+}
+
 function wrapPrototypeMethod(proto, methodName, wrapper) {
   const original = proto?.[methodName];
   if (typeof original !== "function" || original._perspectiveLevelsWrapped) return false;
@@ -308,7 +328,7 @@ function installTokenPreviewScalingPatch() {
   // Обработчик для обычных операций
   const genericUpdateHandler = function(original, args) {
     const result = original.apply(this, args);
-    schedulePerspectiveUpdate(this);
+    applyOrSchedulePerspectiveUpdate(this);
     return result;
   };
 
@@ -337,7 +357,7 @@ function installTokenPreviewScalingPatch() {
       const state = getFlightDragState(this, { event, create: true });
       if (!shift || !state) {
         if (state) state.isShiftDrag = false;
-        schedulePerspectiveUpdate(this);
+        applyOrSchedulePerspectiveUpdate(this);
         return result;
       }
 
@@ -346,7 +366,7 @@ function installTokenPreviewScalingPatch() {
       const elevation = computeFlightElevationFromY(state, pos.y);
       state.lastElevation = elevation;
       applyFlightElevationPreview(this, elevation);
-      schedulePerspectiveUpdate(this);
+      applyOrSchedulePerspectiveUpdate(this);
     } catch (err) {
       console.warn(`${MODULE_ID} | Failed to apply perspective flight preview`, err);
     }
@@ -378,7 +398,7 @@ function installTokenPreviewScalingPatch() {
       console.warn(`${MODULE_ID} | Failed to finalize perspective flight`, err);
     } finally {
       deleteFlightState(this);
-      if (state?.isShiftDrag) schedulePerspectiveUpdate(this);
+      if (state?.isShiftDrag) applyOrSchedulePerspectiveUpdate(this);
       schedulePerspectiveSort({ debounce: true });
     }
 
@@ -413,7 +433,7 @@ function installTokenPreviewScalingPatch() {
 
         if (result && typeof result === "object") result.elevation = elevation;
         applyFlightElevationPreview(this, elevation);
-        schedulePerspectiveUpdate(this);
+        applyOrSchedulePerspectiveUpdate(this);
       } catch (err) {
         console.warn(`${MODULE_ID} | Failed to prepare perspective flight waypoint`, err);
       }

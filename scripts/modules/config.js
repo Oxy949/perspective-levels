@@ -35,6 +35,10 @@ function normalizeRotationDegrees(value) {
   return wrapped > 180 ? wrapped - 360 : wrapped;
 }
 
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object ?? {}, key);
+}
+
 export function normalizeConfig(config = {}) {
   const base = cloneDefaultConfig();
   const merged = mergeConfig(base, config ?? {});
@@ -54,6 +58,11 @@ export function normalizeConfig(config = {}) {
   merged.gridScale = roundNumber(clamp(merged.gridScale, 0.1, 8), 4);
   merged.sceneDepthCells = Math.round(clamp(merged.sceneDepthCells ?? DEFAULT_CONFIG.sceneDepthCells, 1, 200));
   merged.tokenScaleMultiplier = roundNumber(clamp(merged.tokenScaleMultiplier ?? 1, 0.05, 8), 4);
+  const tokenArtVerticalAlign = hasOwn(config, "tokenArtVerticalAlign")
+    ? merged.tokenArtVerticalAlign
+    : (hasOwn(config, "tokenVerticalAlign") ? config.tokenVerticalAlign : merged.tokenArtVerticalAlign);
+  merged.tokenArtVerticalAlign = roundNumber(clamp(tokenArtVerticalAlign ?? DEFAULT_CONFIG.tokenArtVerticalAlign, 0, 1), 4);
+  delete merged.tokenVerticalAlign;
   merged.curve = roundNumber(clamp(merged.curve, 0.4, 4), 4);
   merged.far = {
     x: roundNumber(clamp(merged.far?.x, 0, 1), 4),

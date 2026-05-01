@@ -237,6 +237,7 @@ export class PerspectiveCalibrator {
       <label>${i18n("PERSPECTIVE_LEVELS.GridCellScale")} <input type="range" data-pl-grid-scale min="0.1" max="4" step="0.05"></label>
       <label>${i18n("PERSPECTIVE_LEVELS.SceneDepthCells")} <input type="range" data-pl-scene-depth min="1" max="80" step="1"></label>
       <label>${i18n("PERSPECTIVE_LEVELS.TokenSizeMultiplier")} <input type="range" data-pl-token-scale min="0.05" max="4" step="0.05"></label>
+      <label>${i18n("PERSPECTIVE_LEVELS.TokenArtVerticalAlign")} <input type="range" data-pl-token-align min="0" max="1" step="0.01"></label>
       <footer>
         <button type="button" data-pl-action="save"><i class="fa-solid fa-floppy-disk"></i> ${i18n("PERSPECTIVE_LEVELS.Save")}</button>
         <button type="button" data-pl-action="reset">${i18n("PERSPECTIVE_LEVELS.Reset")}</button>
@@ -276,6 +277,10 @@ export class PerspectiveCalibrator {
       this.config.tokenScaleMultiplier = clamp(event.currentTarget.value, 0.05, 8);
       this._applyConfigChange({ autosave: true });
     });
+    div.querySelector("input[data-pl-token-align]")?.addEventListener("input", event => {
+      this.config.tokenArtVerticalAlign = clamp(event.currentTarget.value, 0, 1);
+      this._applyConfigChange({ autosave: true });
+    });
     div.querySelector("[data-pl-action='save']")?.addEventListener("click", () => this.save());
     div.querySelector("[data-pl-action='reset']")?.addEventListener("click", () => this.reset());
     div.querySelector("[data-pl-action='close']")?.addEventListener("click", () => this.close());
@@ -294,6 +299,7 @@ export class PerspectiveCalibrator {
     const gridScale = this.panel.querySelector("input[data-pl-grid-scale]");
     const sceneDepth = this.panel.querySelector("input[data-pl-scene-depth]");
     const tokenScale = this.panel.querySelector("input[data-pl-token-scale]");
+    const tokenAlign = this.panel.querySelector("input[data-pl-token-align]");
     if (far) far.value = this.config.far.scale;
     if (near) near.value = this.config.near.scale;
     if (farRotation) farRotation.value = this.config.far.rotation ?? 0;
@@ -302,6 +308,7 @@ export class PerspectiveCalibrator {
     if (gridScale) gridScale.value = this.config.gridScale;
     if (sceneDepth) sceneDepth.value = this.config.sceneDepthCells;
     if (tokenScale) tokenScale.value = this.config.tokenScaleMultiplier;
+    if (tokenAlign) tokenAlign.value = this.config.tokenArtVerticalAlign;
   }
 
   redraw() {

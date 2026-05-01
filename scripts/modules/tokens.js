@@ -94,6 +94,69 @@ function getTokenLogicalSize(token, axis) {
   );
 }
 
+function nearlyEqual(a, b, epsilon = 1) {
+  return Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= epsilon;
+}
+
+function getMeshAnchorY(mesh) {
+  const y = Number(mesh?.anchor?.y);
+  return Number.isFinite(y) ? y : null;
+}
+
+function setMeshAnchorY(mesh, y) {
+  if (!mesh || mesh.destroyed || !mesh.anchor) return false;
+
+  const x = Number(mesh.anchor.x);
+  const anchorX = Number.isFinite(x) ? x : 0.5;
+  if (typeof mesh.anchor.set === "function") {
+    mesh.anchor.set(anchorX, y);
+    return true;
+  }
+
+  try {
+    mesh.anchor.y = y;
+    return true;
+  } catch (_err) {
+    return false;
+  }
+}
+
+function resolveTokenBaseMeshAnchorY(mesh, state = null) {
+  const current = getMeshAnchorY(mesh);
+  if (current === null) return null;
+
+  const previousOffset = Number(state?.lastAnchorOffsetY ?? 0) || 0;
+  if (!state || state.meshRef !== mesh || Math.abs(previousOffset) < 0.000001) return current;
+
+  const previousBase = Number(state.baseAnchorY);
+  if (Number.isFinite(previousBase) && nearlyEqual(current, previousBase + previousOffset, 0.0001)) {
+    return current - previousOffset;
+  }
+
+  return current;
+}
+
+function updateTokenBaseMeshAnchorY(mesh, state) {
+  const baseAnchorY = resolveTokenBaseMeshAnchorY(mesh, state);
+  state.baseAnchorY = baseAnchorY;
+  return baseAnchorY;
+}
+
+function restoreTokenBaseMeshAnchor(token, state = ORIGINAL_TOKEN_STATE.get(token)) {
+  const mesh = token?.mesh;
+  if (!state || !mesh || mesh.destroyed || state.meshRef !== mesh) return false;
+
+  const baseAnchorY = updateTokenBaseMeshAnchorY(mesh, state);
+  if (baseAnchorY === null) return false;
+
+  const restored = setMeshAnchorY(mesh, baseAnchorY);
+  if (restored) {
+    state.lastAnchorOffsetY = 0;
+    delete mesh._perspectiveLevelsAnchorOffsetY;
+  }
+  return restored;
+}
+
 function calculateDocumentBaseScale(token, mesh) {
   const textureWidth = getTextureDimension(mesh, "x");
   const textureHeight = getTextureDimension(mesh, "y");
@@ -337,13 +400,17 @@ export function removePerspectiveFromToken(token) {
     cleanupTokenVisuals(token, null);
     const documentKey = getTokenDocumentKey(token);
     if (documentKey) TOKEN_BASE_SCALE_BY_DOCUMENT.delete(documentKey);
-    if (token?.mesh) delete token.mesh._perspectiveLevelsAppliedScale;
+    if (token?.mesh) {
+      delete token.mesh._perspectiveLevelsAppliedScale;
+      delete token.mesh._perspectiveLevelsAnchorOffsetY;
+    }
     return;
   }
 
   try {
     if (token.mesh && !token.mesh.destroyed) {
       token.mesh.scale.set(state.baseScaleX, state.baseScaleY);
+      restoreTokenBaseMeshAnchor(token, state);
       delete token.mesh._perspectiveLevelsAppliedScale;
     }
     cleanupTokenVisuals(token, state);
@@ -399,6 +466,7 @@ function getTokenState(token, mesh) {
   if (!base) base = calculateFallbackBaseScale(mesh);
 
   cleanupTokenVisuals(token, state);
+  const baseAnchorY = resolveTokenBaseMeshAnchorY(mesh, state);
 
   state = {
     signature,
@@ -406,6 +474,8 @@ function getTokenState(token, mesh) {
     baseScaleX: base.baseScaleX,
     baseScaleY: base.baseScaleY,
     baseSource: base.baseSource,
+    baseAnchorY,
+    lastAnchorOffsetY: 0,
     lastPerspectiveScale: 1
   };
 
@@ -428,9 +498,36 @@ export function restoreTokenBaseScale(token) {
   if (!state || !mesh || mesh.destroyed || state.meshRef !== mesh) return false;
 
   mesh.scale.set(state.baseScaleX, state.baseScaleY);
+  restoreTokenBaseMeshAnchor(token, state);
   delete mesh._perspectiveLevelsAppliedScale;
   state.lastPerspectiveScale = 1;
   return true;
+}
+
+function calculateTokenVerticalAlignOffsetY(token, mesh, state, perspectiveScale, config) {
+  const align = clamp(config?.tokenArtVerticalAlign ?? 0.5, 0, 1);
+  const logicalHeight = getTokenLogicalSize(token, "y");
+  const textureHeight = getTextureDimension(mesh, "y");
+  const artHeight = Math.abs((Number(textureHeight) || 0) * (Number(state?.baseScaleY) || 0) * (Number(perspectiveScale) || 1));
+
+  if (!Number.isFinite(logicalHeight) || logicalHeight <= 0 || !Number.isFinite(artHeight) || artHeight <= 0) return 0;
+  return (0.5 - align) * (logicalHeight - artHeight);
+}
+
+function applyTokenVerticalAlignment(token, mesh, state, perspectiveScale, config) {
+  const baseAnchorY = updateTokenBaseMeshAnchorY(mesh, state);
+  if (baseAnchorY === null) return;
+
+  const offsetY = calculateTokenVerticalAlignOffsetY(token, mesh, state, perspectiveScale, config);
+  const textureHeight = getTextureDimension(mesh, "y");
+  const artHeight = Math.abs((Number(textureHeight) || 0) * (Number(state?.baseScaleY) || 0) * (Number(perspectiveScale) || 1));
+  if (!Number.isFinite(artHeight) || artHeight <= 0.0001) return;
+
+  const anchorOffsetY = -offsetY / artHeight;
+  if (setMeshAnchorY(mesh, baseAnchorY + anchorOffsetY)) {
+    state.lastAnchorOffsetY = anchorOffsetY;
+    mesh._perspectiveLevelsAnchorOffsetY = anchorOffsetY;
+  }
 }
 
 function getTokenVisualBottomPoint(token) {
@@ -798,6 +895,7 @@ export function applyPerspectiveToToken(token) {
   const scale = scaleForPerspectiveToken(getTokenGroundPoint(token), config) * tokenScaleMultiplier;
 
   mesh.scale.set(state.baseScaleX * scale, state.baseScaleY * scale);
+  applyTokenVerticalAlignment(token, mesh, state, scale, config);
   mesh._perspectiveLevelsAppliedScale = scale;
   state.lastPerspectiveScale = scale;
   updateFlightShadow(token, state, scale, config);

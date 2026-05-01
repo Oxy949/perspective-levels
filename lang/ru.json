@@ -18,6 +18,7 @@
   "PERSPECTIVE_LEVELS.CellScale": "Масштаб клетки",
   "PERSPECTIVE_LEVELS.SceneDepth": "Глубина сцены",
   "PERSPECTIVE_LEVELS.TokenMultiplier": "Множитель токенов",
+  "PERSPECTIVE_LEVELS.TokenArtVerticalAlign": "Верт. выравн. арта токена",
   "PERSPECTIVE_LEVELS.PerspectiveAnchors": "Якоря перспективы",
   "PERSPECTIVE_LEVELS.Scale": "Масштаб",
   "PERSPECTIVE_LEVELS.Rotation": "Поворот",

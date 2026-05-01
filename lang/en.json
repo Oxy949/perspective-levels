@@ -18,6 +18,7 @@
   "PERSPECTIVE_LEVELS.CellScale": "Cell Scale",
   "PERSPECTIVE_LEVELS.SceneDepth": "Scene Depth",
   "PERSPECTIVE_LEVELS.TokenMultiplier": "Token Multiplier",
+  "PERSPECTIVE_LEVELS.TokenArtVerticalAlign": "Token Art Vertical Align",
   "PERSPECTIVE_LEVELS.PerspectiveAnchors": "Perspective Anchors",
   "PERSPECTIVE_LEVELS.Scale": "Scale",
   "PERSPECTIVE_LEVELS.Rotation": "Rotation",

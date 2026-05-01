@@ -189,6 +189,7 @@ export function injectLevelConfig(app, html, { openCalibrator } = {}) {
             <label>${i18n("PERSPECTIVE_LEVELS.CellScale")} <input type="number" name="${fieldName("gridScale")}" value="${formatNumber(cfg.gridScale)}" min="0.1" max="8" step="any"></label>
             <label>${i18n("PERSPECTIVE_LEVELS.SceneDepth")} <input type="number" name="${fieldName("sceneDepthCells")}" value="${cfg.sceneDepthCells}" min="1" max="200" step="1"></label>
             <label data-perspective-levels-token-content>${i18n("PERSPECTIVE_LEVELS.TokenMultiplier")} <input type="number" name="${fieldName("tokenScaleMultiplier")}" value="${formatNumber(cfg.tokenScaleMultiplier)}" min="0.05" max="8" step="any"></label>
+            <label data-perspective-levels-token-content>${i18n("PERSPECTIVE_LEVELS.TokenArtVerticalAlign")} <input type="number" name="${fieldName("tokenArtVerticalAlign")}" value="${formatNumber(cfg.tokenArtVerticalAlign)}" min="0" max="1" step="any"></label>
           </div>
         </div>
 
