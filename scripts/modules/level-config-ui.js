@@ -168,36 +168,36 @@ export function injectLevelConfig(app, html, { openCalibrator } = {}) {
         </div>
 
         <div class="perspective-levels-section">
-          <div class="perspective-levels-section-title">Сетка</div>
+          <div class="perspective-levels-section-title">${i18n("PERSPECTIVE_LEVELS.GridSection")}</div>
           <div class="perspective-levels-fields-grid perspective-levels-grid-settings">
-            <label>Цвет <input type="color" name="${fieldName("gridColor")}" value="${cfg.gridColor}"></label>
-            <label>Прозрачность <input type="number" name="${fieldName("gridAlpha")}" value="${formatNumber(cfg.gridAlpha)}" min="0" max="1" step="any"></label>
-            <label>Толщина <input type="number" name="${fieldName("gridLineWidth")}" value="${formatNumber(cfg.gridLineWidth)}" min="0.25" max="8" step="any"></label>
-            <label>Масштаб клетки <input type="number" name="${fieldName("gridScale")}" value="${formatNumber(cfg.gridScale)}" min="0.1" max="8" step="any"></label>
-            <label>Глубина сцены <input type="number" name="${fieldName("sceneDepthCells")}" value="${cfg.sceneDepthCells}" min="1" max="200" step="1"></label>
-            <label>Множитель токенов <input type="number" name="${fieldName("tokenScaleMultiplier")}" value="${formatNumber(cfg.tokenScaleMultiplier)}" min="0.05" max="8" step="any"></label>
+            <label>${i18n("PERSPECTIVE_LEVELS.Color")} <input type="color" name="${fieldName("gridColor")}" value="${cfg.gridColor}"></label>
+            <label>${i18n("PERSPECTIVE_LEVELS.Opacity")} <input type="number" name="${fieldName("gridAlpha")}" value="${formatNumber(cfg.gridAlpha)}" min="0" max="1" step="any"></label>
+            <label>${i18n("PERSPECTIVE_LEVELS.LineWidth")} <input type="number" name="${fieldName("gridLineWidth")}" value="${formatNumber(cfg.gridLineWidth)}" min="0.25" max="8" step="any"></label>
+            <label>${i18n("PERSPECTIVE_LEVELS.CellScale")} <input type="number" name="${fieldName("gridScale")}" value="${formatNumber(cfg.gridScale)}" min="0.1" max="8" step="any"></label>
+            <label>${i18n("PERSPECTIVE_LEVELS.SceneDepth")} <input type="number" name="${fieldName("sceneDepthCells")}" value="${cfg.sceneDepthCells}" min="1" max="200" step="1"></label>
+            <label>${i18n("PERSPECTIVE_LEVELS.TokenMultiplier")} <input type="number" name="${fieldName("tokenScaleMultiplier")}" value="${formatNumber(cfg.tokenScaleMultiplier)}" min="0.05" max="8" step="any"></label>
           </div>
         </div>
 
         <div class="perspective-levels-section">
-          <div class="perspective-levels-section-title">Якоря перспективы</div>
+          <div class="perspective-levels-section-title">${i18n("PERSPECTIVE_LEVELS.PerspectiveAnchors")}</div>
           <div class="perspective-levels-fields-grid perspective-levels-anchor-grid">
             <label>Far X <input type="number" name="${fieldName("far.x")}" value="${formatNumber(cfg.far.x)}" min="0" max="1" step="any"></label>
             <label>Far Y <input type="number" name="${fieldName("far.y")}" value="${formatNumber(cfg.far.y)}" min="0" max="1" step="any"></label>
-            <label>Far Scale <input type="number" name="${fieldName("far.scale")}" value="${formatNumber(cfg.far.scale)}" min="0.05" max="4" step="any"></label>
-            <label>Far Rotation <input type="number" name="${fieldName("far.rotation")}" value="${formatNumber(cfg.far.rotation ?? 0)}" min="-180" max="180" step="any"></label>
+            <label>${i18n("PERSPECTIVE_LEVELS.FarAnchor")} ${i18n("PERSPECTIVE_LEVELS.Scale")} <input type="number" name="${fieldName("far.scale")}" value="${formatNumber(cfg.far.scale)}" min="0.05" max="4" step="any"></label>
+            <label>${i18n("PERSPECTIVE_LEVELS.FarAnchor")} ${i18n("PERSPECTIVE_LEVELS.Rotation")} <input type="number" name="${fieldName("far.rotation")}" value="${formatNumber(cfg.far.rotation ?? 0)}" min="-180" max="180" step="any"></label>
             <label>Near X <input type="number" name="${fieldName("near.x")}" value="${formatNumber(cfg.near.x)}" min="0" max="1" step="any"></label>
             <label>Near Y <input type="number" name="${fieldName("near.y")}" value="${formatNumber(cfg.near.y)}" min="0" max="1" step="any"></label>
-            <label>Near Scale <input type="number" name="${fieldName("near.scale")}" value="${formatNumber(cfg.near.scale)}" min="0.05" max="4" step="any"></label>
-            <label>Near Rotation <input type="number" name="${fieldName("near.rotation")}" value="${formatNumber(cfg.near.rotation ?? 0)}" min="-180" max="180" step="any"></label>
-            <label>Curve <input type="number" name="${fieldName("curve")}" value="${formatNumber(cfg.curve)}" min="0.4" max="4" step="any"></label>
+            <label>${i18n("PERSPECTIVE_LEVELS.NearAnchor")} ${i18n("PERSPECTIVE_LEVELS.Scale")} <input type="number" name="${fieldName("near.scale")}" value="${formatNumber(cfg.near.scale)}" min="0.05" max="4" step="any"></label>
+            <label>${i18n("PERSPECTIVE_LEVELS.NearAnchor")} ${i18n("PERSPECTIVE_LEVELS.Rotation")} <input type="number" name="${fieldName("near.rotation")}" value="${formatNumber(cfg.near.rotation ?? 0)}" min="-180" max="180" step="any"></label>
+            <label>${i18n("PERSPECTIVE_LEVELS.Curve")} <input type="number" name="${fieldName("curve")}" value="${formatNumber(cfg.curve)}" min="0.4" max="4" step="any"></label>
           </div>
         </div>
 
         <button type="button" class="perspective-levels-open-calibrator">
           <i class="fa-solid fa-crosshairs"></i> ${i18n("PERSPECTIVE_LEVELS.OpenCalibrator")}
         </button>
-        <p class="hint">Настройки сохраняются в flags текущего Level. В калибраторе оба якоря являются линиями: перетаскивание двигает линию, колесико мыши над ней вращает её.</p>
+        <p class="hint">${i18n("PERSPECTIVE_LEVELS.ConfigHint")}</p>
       </fieldset>
     </section>
   `;
@@ -215,7 +215,7 @@ export function injectLevelConfig(app, html, { openCalibrator } = {}) {
   block.querySelector(".perspective-levels-open-calibrator")?.addEventListener("click", event => {
     event.preventDefault();
     if (canvas.level?.id !== level.id) {
-      ui.notifications?.warn("Сначала выбери этот уровень на сцене, затем открой калибровку.");
+      ui.notifications?.warn(i18n("PERSPECTIVE_LEVELS.SelectLevelFirst"));
       return;
     }
     openCalibrator?.();

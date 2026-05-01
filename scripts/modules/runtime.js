@@ -1,4 +1,5 @@
 import { MODULE_ID } from "./constants.js";
+import { i18n } from "./utils.js";
 import { getLevelConfig, normalizeConfig, setLevelConfig, isPerspectiveEnabled } from "./config.js";
 import { PerspectiveCalibrator } from "./calibrator.js";
 import { PerspectiveGridOverlay } from "./grid-overlay.js";
@@ -283,7 +284,7 @@ export function registerHooks() {
 
     tokens.tools.perspectiveLevelsCalibrator = {
       name: "perspectiveLevelsCalibrator",
-      title: "Perspective Levels: калибровка уровня",
+      title: i18n("PERSPECTIVE_LEVELS.ToolbarCalibrator"),
       icon: "fa-solid fa-vector-square",
       order: Object.keys(tokens.tools).length + 100,
       button: true,

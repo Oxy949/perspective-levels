@@ -1,36 +1,36 @@
 # Perspective Levels
 
-Модуль для Foundry VTT 14, который добавляет визуальную перспективу на уровне (`Level`) сцены:
+A Foundry VTT 14 module that adds visual perspective to individual Scene Levels (`Level`):
 
-- настройки хранятся на конкретном `Level` через flags;
-- на одном уровне можно оставить обычную сетку, на другом включить перспективную;
-- токены визуально масштабируются по Y-позиции между двумя якорями;
-- порядок отрисовки токенов пересчитывается по перспективной глубине от нижней точки токена;
-- размер клетки перспективной сетки настраивается отдельно для каждого уровня;
-- дистанции считаются по клеткам нарисованной перспективной сетки, а не по экранным пикселям;
-- есть калибратор с двумя линиями-якорями на canvas: их можно двигать и вращать, чтобы задать плоскость земли.
+- settings are stored on each `Level` through flags;
+- one level can keep the regular grid while another level uses a perspective grid;
+- tokens are visually scaled by their Y position between two anchors;
+- token draw order is recalculated by perspective depth from the token's bottom point;
+- perspective grid cell size can be configured separately for each level;
+- distances are measured by the cells of the rendered perspective grid, not by screen pixels;
+- a calibrator with two line anchors is available on the canvas: move and rotate them to define the ground plane.
 
 
 ## Installation
 
 1. Copy https://github.com/Oxy949/perspective-levels/releases/latest/download/module.json
-2. Paste it in your Foundry VTT, wait for install
-3. Enable the module in your world
+2. Paste it into Foundry VTT's module installer and wait for the installation to finish.
+3. Enable the module in your world.
 4. Enjoy!
 
 
-## Использование
+## Usage
 
-1. Откройте сцену с Scene Levels.
-2. Выберите нужный уровень.
-3. Откройте настройки уровня (`LevelConfig`).
-4. В блоке **Перспектива уровня** включите **Использовать перспективу на этом уровне**.
-5. Нажмите **Открыть калибровку якорей** или кнопку с иконкой в инструментах токенов.
-6. Перетащите дальний и ближний якоря-линии. Вращайте линию колесом мыши над ней; Shift+колесо даёт точную доводку. Их масштаб задаётся ползунками.
-7. Нажмите **Сохранить на уровень**.
+1. Open a scene with Scene Levels.
+2. Select the level you want to configure.
+3. Open the level settings (`LevelConfig`).
+4. In the **Level Perspective** section, enable **Use perspective on this level**.
+5. Click **Open Anchor Calibration** or the icon button in the token tools.
+6. Drag the far and near line anchors. Rotate a line with the mouse wheel while hovering over it; hold Shift while scrolling for fine adjustment. Their scale is controlled by the sliders.
+7. Click **Save to Level**.
 
-## Важное ограничение
+## Important Limitation
 
-Модуль перехватывает измерение дистанций через `BaseGrid#measurePath` и `Token#measureMovementPath`, когда на текущем уровне включена опция **Считать дистанции по перспективной сетке**. Расчёт теперь идёт по клеточным координатам самой нарисованной перспективной сетки: один перспективный квадрат равен `scene.grid.distance` Foundry — например 5 ft в D&D-сцене. Горизонтальный и вертикальный экранный шаги не обязаны быть равны: точка сначала переводится в координаты перспективной сетки, затем расстояние считается в клетках с учётом правила диагоналей сцены (`grid.diagonals`).
+The module intercepts distance measurement through `BaseGrid#measurePath` and `Token#measureMovementPath` when **Measure distances on the perspective grid** is enabled on the current level. Measurement uses the cell coordinates of the rendered perspective grid: one perspective square equals Foundry's `scene.grid.distance`, for example 5 ft in a D&D scene. Horizontal and vertical screen steps do not have to be equal: each point is first converted into perspective-grid coordinates, then distance is measured in cells using the scene's diagonal rule (`grid.diagonals`).
 
-Ограничение: модуль не переписывает коллизии стен, Regions и pathfinding. Если Foundry или система возвращает бесконечную стоимость движения из-за препятствия, модуль сохраняет блокировку; если есть terrain/movement multiplier, он пытается сохранить исходное соотношение cost/distance.
+Limitation: the module does not rewrite wall collisions, Regions, or pathfinding. If Foundry or the game system returns an infinite movement cost because of an obstacle, the module preserves that block; if a terrain or movement multiplier is present, it tries to preserve the original cost/distance ratio.

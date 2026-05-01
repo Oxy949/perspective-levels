@@ -1,7 +1,7 @@
 import { getLevelConfig, normalizeConfig, setLevelConfig } from "./config.js";
 import { anchorToPoint, getPerspectiveGridModel, pointToAnchor } from "./projection.js";
 import { getSceneRect } from "./scene.js";
-import { clamp, i18n } from "./utils.js";
+import { clamp, i18n, i18nFormat } from "./utils.js";
 
 function normalizeRotation(value) {
   const n = Number(value) || 0;
@@ -32,7 +32,7 @@ export class PerspectiveCalibrator {
 
   open() {
     if (!canvas?.ready || !canvas.level) {
-      ui.notifications?.warn("Открой сцену и выбери уровень, который нужно настроить.");
+      ui.notifications?.warn(i18n("PERSPECTIVE_LEVELS.OpenSceneAndSelectLevel"));
       return;
     }
 
@@ -83,7 +83,7 @@ export class PerspectiveCalibrator {
   async save() {
     if (!this.level || !this.config) return;
     await setLevelConfig(this.level, this.config);
-    ui.notifications?.info(`Perspective Levels: настройки сохранены на уровень «${this.level.name}».`);
+    ui.notifications?.info(i18nFormat("PERSPECTIVE_LEVELS.SavedToLevel", { level: this.level.name }));
     this.refresh();
   }
 
@@ -166,15 +166,15 @@ export class PerspectiveCalibrator {
     div.id = "perspective-levels-calibrator";
     div.innerHTML = `
       <header>${i18n("PERSPECTIVE_LEVELS.Calibrator")}</header>
-      <p class="hint">Перетащи две линии-якоря на сцене. Колёсико мыши над линией вращает её, Shift+колёсико — точная доводка. Эти линии задают плоскость земли.</p>
-      <label>${i18n("PERSPECTIVE_LEVELS.FarAnchor")} scale <input type="range" data-pl-scale="far" min="0.05" max="2.5" step="0.01"></label>
-      <label>${i18n("PERSPECTIVE_LEVELS.FarAnchor")} rotation <input type="range" data-pl-rotation="far" min="-180" max="180" step="1"></label>
-      <label>${i18n("PERSPECTIVE_LEVELS.NearAnchor")} scale <input type="range" data-pl-scale="near" min="0.05" max="3.5" step="0.01"></label>
-      <label>${i18n("PERSPECTIVE_LEVELS.NearAnchor")} rotation <input type="range" data-pl-rotation="near" min="-180" max="180" step="1"></label>
-      <label>Кривизна сетки <input type="range" data-pl-curve min="0.4" max="4" step="0.01"></label>
-      <label>Масштаб клетки сетки <input type="range" data-pl-grid-scale min="0.1" max="4" step="0.05"></label>
-      <label>Глубина сцены, клеток <input type="range" data-pl-scene-depth min="1" max="80" step="1"></label>
-      <label>Множитель размера токенов <input type="range" data-pl-token-scale min="0.05" max="4" step="0.05"></label>
+      <p class="hint">${i18n("PERSPECTIVE_LEVELS.CalibratorHint")}</p>
+      <label>${i18n("PERSPECTIVE_LEVELS.FarAnchor")} ${i18n("PERSPECTIVE_LEVELS.Scale")} <input type="range" data-pl-scale="far" min="0.05" max="2.5" step="0.01"></label>
+      <label>${i18n("PERSPECTIVE_LEVELS.FarAnchor")} ${i18n("PERSPECTIVE_LEVELS.Rotation")} <input type="range" data-pl-rotation="far" min="-180" max="180" step="1"></label>
+      <label>${i18n("PERSPECTIVE_LEVELS.NearAnchor")} ${i18n("PERSPECTIVE_LEVELS.Scale")} <input type="range" data-pl-scale="near" min="0.05" max="3.5" step="0.01"></label>
+      <label>${i18n("PERSPECTIVE_LEVELS.NearAnchor")} ${i18n("PERSPECTIVE_LEVELS.Rotation")} <input type="range" data-pl-rotation="near" min="-180" max="180" step="1"></label>
+      <label>${i18n("PERSPECTIVE_LEVELS.GridCurve")} <input type="range" data-pl-curve min="0.4" max="4" step="0.01"></label>
+      <label>${i18n("PERSPECTIVE_LEVELS.GridCellScale")} <input type="range" data-pl-grid-scale min="0.1" max="4" step="0.05"></label>
+      <label>${i18n("PERSPECTIVE_LEVELS.SceneDepthCells")} <input type="range" data-pl-scene-depth min="1" max="80" step="1"></label>
+      <label>${i18n("PERSPECTIVE_LEVELS.TokenSizeMultiplier")} <input type="range" data-pl-token-scale min="0.05" max="4" step="0.05"></label>
       <footer>
         <button type="button" data-pl-action="save"><i class="fa-solid fa-floppy-disk"></i> ${i18n("PERSPECTIVE_LEVELS.Save")}</button>
         <button type="button" data-pl-action="reset">${i18n("PERSPECTIVE_LEVELS.Reset")}</button>

@@ -2,6 +2,17 @@ export function i18n(key) {
   return globalThis.game?.i18n?.localize?.(key) ?? key;
 }
 
+export function i18nFormat(key, data = {}) {
+  const formatter = globalThis.game?.i18n?.format;
+  if (typeof formatter === "function") return formatter.call(globalThis.game.i18n, key, data);
+
+  const template = i18n(key);
+  return String(template).replace(/\{(\w+)\}/g, (match, field) => {
+    const value = data[field];
+    return value === undefined || value === null ? match : String(value);
+  });
+}
+
 export function clamp(value, min, max) {
   value = Number(value);
   if (!Number.isFinite(value)) return min;
