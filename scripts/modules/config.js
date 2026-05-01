@@ -1,5 +1,5 @@
 import { DEFAULT_CONFIG, FLAG, MODULE_ID } from "./constants.js";
-import { asBool, clamp } from "./utils.js";
+import { asBool, clamp, normalizeHexColor } from "./utils.js";
 
 export function cloneDefaultConfig() {
   if (globalThis.foundry?.utils?.deepClone) return globalThis.foundry.utils.deepClone(DEFAULT_CONFIG);
@@ -46,7 +46,7 @@ export function normalizeConfig(config = {}) {
   delete merged.outlineColor;
   delete merged.outlineWidth;
 
-  merged.gridColor = String(merged.gridColor || DEFAULT_CONFIG.gridColor);
+  merged.gridColor = normalizeHexColor(merged.gridColor, DEFAULT_CONFIG.gridColor);
   merged.gridAlpha = roundNumber(clamp(merged.gridAlpha, 0, 1), 4);
   merged.gridLineWidth = roundNumber(clamp(merged.gridLineWidth, 0.25, 8), 4);
   merged.gridScale = roundNumber(clamp(merged.gridScale, 0.1, 8), 4);

@@ -170,8 +170,8 @@ function pointInsideTokenRect(point, token, rect = getSceneRect()) {
   if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
 
   // Ruler endpoints are usually token centers, but some systems feed bottom or
-  // snapped grid points. Keep a small margin so scaled/outlined/elevated tokens
-  // are still detected without grabbing unrelated tokens across the scene.
+  // snapped grid points. Keep a small margin so scaled/elevated tokens are still
+  // detected without grabbing unrelated tokens across the scene.
   const margin = Math.max(2, rect.gridSize * 0.1);
   return x >= tokenRect.x - margin
     && x <= tokenRect.x + tokenRect.width + margin

@@ -16,8 +16,3 @@ export const DEFAULT_CONFIG = Object.freeze({
   near: { x: 0.5, y: 0.84, scale: 1.18, rotation: 0 },
   curve: 1.45
 });
-
-export const LEGACY_TOKEN_OUTLINE_NAMES = Object.freeze([
-  "PerspectiveLevels.TokenOutlineFallback",
-  "PerspectiveLevels.TokenAlphaOutline"
-]);

@@ -250,9 +250,13 @@ function clearTokenStatusIconRefreshState() {
 
 gridOverlay.onLevelChange = () => refreshAll();
 
-export function refreshAll() {
+function refreshOverlays() {
   gridOverlay.draw();
   if (calibrator.active) calibrator.redraw();
+}
+
+export function refreshAll() {
+  refreshOverlays();
   refreshTokens();
   schedulePerspectiveSort();
 }
@@ -305,7 +309,7 @@ export function registerHooks() {
     refreshAll();
   });
 
-  hooks.on("canvasPan", () => refreshAll());
+  hooks.on("canvasPan", () => refreshOverlays());
 
   // В Foundry 14 иконки статусов рисуются отдельным слоем Token#drawEffects.
   // Перспективный модуль часто трогает mesh/refresh токена, поэтому при добавлении

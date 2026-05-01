@@ -35,6 +35,16 @@ function syncBooleanControls(root, formData = null) {
   }
 }
 
+function getBooleanControlValue(root, path) {
+  return root.querySelector(`input[type='checkbox'][data-perspective-levels-boolean='${path}']`)?.checked ?? false;
+}
+
+function syncVisibilityState(root) {
+  root.dataset.perspectiveEnabled = getBooleanControlValue(root, "enabled") ? "true" : "false";
+  root.dataset.perspectiveGridEnabled = getBooleanControlValue(root, "grid") ? "true" : "false";
+  root.dataset.perspectiveTokenScaling = getBooleanControlValue(root, "tokenScaling") ? "true" : "false";
+}
+
 function toElement(htmlString) {
   const template = document.createElement("template");
   template.innerHTML = htmlString.trim();
@@ -139,43 +149,46 @@ export function injectLevelConfig(app, html, { openCalibrator } = {}) {
       <fieldset class="perspective-levels-config">
         <legend><i class="fa-solid fa-vector-square"></i> ${i18n("PERSPECTIVE_LEVELS.Title")}</legend>
 
-        <div class="perspective-levels-row">
+        <div class="perspective-levels-row perspective-levels-master-row">
           <label>${i18n("PERSPECTIVE_LEVELS.Enable")}</label>
           <div class="perspective-levels-control">
             ${booleanControl("enabled", cfg.enabled)}
           </div>
         </div>
 
-        <div class="perspective-levels-row">
-          <label>${i18n("PERSPECTIVE_LEVELS.Grid")}</label>
-          <div class="perspective-levels-control">
-            ${booleanControl("grid", cfg.grid)}
-          </div>
-        </div>
+        <div class="perspective-levels-advanced" data-perspective-levels-enabled-content>
+          <div class="perspective-levels-toggle-grid">
+            <div class="perspective-levels-row">
+              <label>${i18n("PERSPECTIVE_LEVELS.Grid")}</label>
+              <div class="perspective-levels-control">
+                ${booleanControl("grid", cfg.grid)}
+              </div>
+            </div>
 
-        <div class="perspective-levels-row">
-          <label>${i18n("PERSPECTIVE_LEVELS.TokenScaling")}</label>
-          <div class="perspective-levels-control">
-            ${booleanControl("tokenScaling", cfg.tokenScaling)}
-          </div>
-        </div>
+            <div class="perspective-levels-row">
+              <label>${i18n("PERSPECTIVE_LEVELS.TokenScaling")}</label>
+              <div class="perspective-levels-control">
+                ${booleanControl("tokenScaling", cfg.tokenScaling)}
+              </div>
+            </div>
 
-        <div class="perspective-levels-row">
-          <label>${i18n("PERSPECTIVE_LEVELS.Distance")}</label>
-          <div class="perspective-levels-control">
-            ${booleanControl("distance", cfg.distance)}
+            <div class="perspective-levels-row">
+              <label>${i18n("PERSPECTIVE_LEVELS.Distance")}</label>
+              <div class="perspective-levels-control">
+                ${booleanControl("distance", cfg.distance)}
+              </div>
+            </div>
           </div>
-        </div>
 
         <div class="perspective-levels-section">
           <div class="perspective-levels-section-title">${i18n("PERSPECTIVE_LEVELS.GridSection")}</div>
           <div class="perspective-levels-fields-grid perspective-levels-grid-settings">
-            <label>${i18n("PERSPECTIVE_LEVELS.Color")} <input type="color" name="${fieldName("gridColor")}" value="${cfg.gridColor}"></label>
-            <label>${i18n("PERSPECTIVE_LEVELS.Opacity")} <input type="number" name="${fieldName("gridAlpha")}" value="${formatNumber(cfg.gridAlpha)}" min="0" max="1" step="any"></label>
-            <label>${i18n("PERSPECTIVE_LEVELS.LineWidth")} <input type="number" name="${fieldName("gridLineWidth")}" value="${formatNumber(cfg.gridLineWidth)}" min="0.25" max="8" step="any"></label>
+            <label data-perspective-levels-grid-content>${i18n("PERSPECTIVE_LEVELS.Color")} <input type="color" name="${fieldName("gridColor")}" value="${cfg.gridColor}"></label>
+            <label data-perspective-levels-grid-content>${i18n("PERSPECTIVE_LEVELS.Opacity")} <input type="number" name="${fieldName("gridAlpha")}" value="${formatNumber(cfg.gridAlpha)}" min="0" max="1" step="any"></label>
+            <label data-perspective-levels-grid-content>${i18n("PERSPECTIVE_LEVELS.LineWidth")} <input type="number" name="${fieldName("gridLineWidth")}" value="${formatNumber(cfg.gridLineWidth)}" min="0.25" max="8" step="any"></label>
             <label>${i18n("PERSPECTIVE_LEVELS.CellScale")} <input type="number" name="${fieldName("gridScale")}" value="${formatNumber(cfg.gridScale)}" min="0.1" max="8" step="any"></label>
             <label>${i18n("PERSPECTIVE_LEVELS.SceneDepth")} <input type="number" name="${fieldName("sceneDepthCells")}" value="${cfg.sceneDepthCells}" min="1" max="200" step="1"></label>
-            <label>${i18n("PERSPECTIVE_LEVELS.TokenMultiplier")} <input type="number" name="${fieldName("tokenScaleMultiplier")}" value="${formatNumber(cfg.tokenScaleMultiplier)}" min="0.05" max="8" step="any"></label>
+            <label data-perspective-levels-token-content>${i18n("PERSPECTIVE_LEVELS.TokenMultiplier")} <input type="number" name="${fieldName("tokenScaleMultiplier")}" value="${formatNumber(cfg.tokenScaleMultiplier)}" min="0.05" max="8" step="any"></label>
           </div>
         </div>
 
@@ -198,15 +211,20 @@ export function injectLevelConfig(app, html, { openCalibrator } = {}) {
           <i class="fa-solid fa-crosshairs"></i> ${i18n("PERSPECTIVE_LEVELS.OpenCalibrator")}
         </button>
         <p class="hint">${i18n("PERSPECTIVE_LEVELS.ConfigHint")}</p>
+        </div>
       </fieldset>
     </section>
   `;
 
   const block = toElement(htmlString);
   insertConfigBlock(element, form, block);
+  syncVisibilityState(block);
 
   block.addEventListener("change", event => {
-    if (event.target?.matches?.("input[type='checkbox'][data-perspective-levels-boolean]")) syncBooleanControls(block);
+    if (event.target?.matches?.("input[type='checkbox'][data-perspective-levels-boolean]")) {
+      syncBooleanControls(block);
+      syncVisibilityState(block);
+    }
   });
 
   form.addEventListener("submit", () => syncBooleanControls(block), { capture: true });

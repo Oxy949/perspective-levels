@@ -1,4 +1,4 @@
-import { LEGACY_TOKEN_OUTLINE_NAMES, MODULE_ID } from "./constants.js";
+import { MODULE_ID } from "./constants.js";
 import { getLevelConfig } from "./config.js";
 import { getSceneGridDistance, getSceneRect } from "./scene.js";
 import { getPerspectiveCellScreenHeightAtRow, scaleForPerspectiveToken, screenPointToElevationGroundPoint, screenPointToPerspectiveGrid } from "./projection.js";
@@ -142,21 +142,6 @@ function scheduleBaseScaleRetry(token) {
       console.warn(`${MODULE_ID} | Failed to retry token perspective base scale`, err);
     }
   });
-}
-
-function cleanupLegacyRectangleOutline(token) {
-  const names = new Set(LEGACY_TOKEN_OUTLINE_NAMES);
-
-  for (const child of [...(token.children ?? [])]) {
-    if (names.has(child?.name) && !child.destroyed) child.destroy({ children: true });
-  }
-
-  const meshParent = token.mesh?.parent;
-  if (meshParent && meshParent !== token) {
-    for (const child of [...(meshParent.children ?? [])]) {
-      if (names.has(child?.name) && !child.destroyed) child.destroy({ children: true });
-    }
-  }
 }
 
 function getCurrentUser() {
@@ -342,33 +327,14 @@ function updateFlightShadow(token, state, perspectiveScale, config) {
   drawFlightShadow(shadow, radiusX, radiusY, alpha);
   placeFlightShadowBelowToken(token, state);
 }
-function removePerspectiveOutlineFilters(mesh) {
-  if (!mesh || !Array.isArray(mesh.filters)) return;
-  const kept = mesh.filters.filter(filter => !filter?._perspectiveLevelsOutline && !filter?._perspectiveLevelsMteOutline);
-  mesh.filters = kept.length ? kept : null;
-}
-
-function cleanupTokenOutline(token, state = ORIGINAL_TOKEN_STATE.get(token)) {
-  removePerspectiveOutlineFilters(token.mesh);
+function cleanupTokenVisuals(token, state = ORIGINAL_TOKEN_STATE.get(token)) {
   destroyFlightShadow(token, state);
-
-  if (state?.outlineContainer && !state.outlineContainer.destroyed) {
-    state.outlineContainer.destroy({ children: true });
-  }
-
-  if (state) {
-    state.outlineContainer = null;
-    state.outlineSprites = [];
-    state.outlineParent = null;
-  }
-
-  cleanupLegacyRectangleOutline(token);
 }
 
 export function removePerspectiveFromToken(token) {
   const state = ORIGINAL_TOKEN_STATE.get(token);
   if (!state) {
-    cleanupTokenOutline(token, null);
+    cleanupTokenVisuals(token, null);
     const documentKey = getTokenDocumentKey(token);
     if (documentKey) TOKEN_BASE_SCALE_BY_DOCUMENT.delete(documentKey);
     if (token?.mesh) delete token.mesh._perspectiveLevelsAppliedScale;
@@ -379,9 +345,8 @@ export function removePerspectiveFromToken(token) {
     if (token.mesh && !token.mesh.destroyed) {
       token.mesh.scale.set(state.baseScaleX, state.baseScaleY);
       delete token.mesh._perspectiveLevelsAppliedScale;
-      removePerspectiveOutlineFilters(token.mesh);
     }
-    cleanupTokenOutline(token, state);
+    cleanupTokenVisuals(token, state);
   } finally {
     ORIGINAL_TOKEN_STATE.delete(token);
     const documentKey = getTokenDocumentKey(token);
@@ -433,7 +398,7 @@ function getTokenState(token, mesh) {
   // временный PIXI-scale Foundry базовым размером токена.
   if (!base) base = calculateFallbackBaseScale(mesh);
 
-  cleanupTokenOutline(token, state);
+  cleanupTokenVisuals(token, state);
 
   state = {
     signature,

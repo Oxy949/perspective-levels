@@ -42,6 +42,11 @@ export function parseColor(value, fallback = 0xffffff) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+export function normalizeHexColor(value, fallback = "#ffffff") {
+  const fallbackColor = parseColor(fallback, 0xffffff);
+  return `#${parseColor(value, fallbackColor).toString(16).padStart(6, "0")}`;
+}
+
 export function safeArray(value) {
   if (!value) return [];
   if (Array.isArray(value)) return value;
