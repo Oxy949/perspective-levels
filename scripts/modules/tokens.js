@@ -2,6 +2,7 @@ import { MODULE_ID } from "./constants.js";
 import { getLevelConfig } from "./config.js";
 import { getSceneGridDistance, getSceneRect } from "./scene.js";
 import { getPerspectiveCellScreenHeightAtRow, getPerspectiveGridModel, scaleForPerspectiveToken, screenPointToElevationGroundPoint, screenPointToPerspectiveGrid } from "./projection.js";
+import { positionTokenPerspectiveFrameInfo, resetTokenPerspectiveFrameInfo } from "./token-hit-testing.js";
 import { clamp } from "./utils.js";
 
 const ORIGINAL_TOKEN_STATE = new WeakMap();
@@ -404,6 +405,45 @@ function cleanupTokenVisuals(token, state = ORIGINAL_TOKEN_STATE.get(token)) {
   destroyFlightShadow(token, state);
 }
 
+function getPerspectiveFrameSignature(token, config = getLevelConfig()) {
+  const meshScale = Number(token?.mesh?._perspectiveLevelsAppliedScale);
+  const scale = config?.enabled && config?.tokenScaling && Number.isFinite(meshScale) ? meshScale : 1;
+  return [
+    Boolean(config?.enabled),
+    Boolean(config?.tokenScaling),
+    Number(scale).toFixed(6),
+    Number(config?.tokenArtVerticalAlign ?? 0.5).toFixed(4),
+    Number(token?.position?.x ?? token?.x ?? token?.document?.x ?? 0).toFixed(2),
+    Number(token?.position?.y ?? token?.y ?? token?.document?.y ?? 0).toFixed(2),
+    Number(token?.w ?? token?.width ?? token?.document?.width ?? 0).toFixed(4),
+    Number(token?.h ?? token?.height ?? token?.document?.height ?? 0).toFixed(4),
+    Number(getTextureDimension(token?.mesh, "x") ?? 0).toFixed(2),
+    Number(getTextureDimension(token?.mesh, "y") ?? 0).toFixed(2),
+    Number(token?.mesh?.scale?.x ?? 0).toFixed(6),
+    Number(token?.mesh?.scale?.y ?? 0).toFixed(6),
+    token?.shape?.constructor?.name ?? ""
+  ].join("|");
+}
+
+function refreshTokenPerspectiveFrame(token, config = getLevelConfig(), { force = false } = {}) {
+  if (!isTokenObject(token) || token.destroyed) return;
+
+  const signature = getPerspectiveFrameSignature(token, config);
+  if (!force && token._perspectiveLevelsFrameSignature === signature) return;
+  token._perspectiveLevelsFrameSignature = signature;
+
+  try {
+    if (typeof token._refreshShape === "function") token._refreshShape();
+    else if (typeof token.getShape === "function") token.shape = token.getShape();
+  } catch (_err) { /* noop */ }
+
+  for (const method of ["_refreshBorder", "_refreshTarget", "_refreshRingVisuals", "_updateQuadtree"]) {
+    try { token?.[method]?.(); } catch (_err) { /* noop */ }
+  }
+  if (config?.enabled && config?.tokenScaling) positionTokenPerspectiveFrameInfo(token);
+  else resetTokenPerspectiveFrameInfo(token);
+}
+
 export function removePerspectiveFromToken(token) {
   const sortKey = getTokenSortCacheKey(token);
   if (sortKey) PERSPECTIVE_SORT_CACHE.delete(sortKey);
@@ -419,6 +459,11 @@ export function removePerspectiveFromToken(token) {
       delete token.mesh._perspectiveLevelsAppliedScale;
       delete token.mesh._perspectiveLevelsAnchorOffsetY;
     }
+    delete token._perspectiveLevelsFrameSignature;
+    delete token._perspectiveLevelsFrameShape;
+    delete token._perspectiveLevelsBaseFrameBounds;
+    refreshTokenPerspectiveFrame(token, getLevelConfig(), { force: true });
+    resetTokenPerspectiveFrameInfo(token);
     return;
   }
 
@@ -430,6 +475,11 @@ export function removePerspectiveFromToken(token) {
     }
     restoreTokenRenderElevation(token);
     cleanupTokenVisuals(token, state);
+    delete token._perspectiveLevelsFrameSignature;
+    delete token._perspectiveLevelsFrameShape;
+    delete token._perspectiveLevelsBaseFrameBounds;
+    refreshTokenPerspectiveFrame(token, getLevelConfig(), { force: true });
+    resetTokenPerspectiveFrameInfo(token);
   } finally {
     ORIGINAL_TOKEN_STATE.delete(token);
     const documentKey = getTokenDocumentKey(token);
@@ -517,6 +567,7 @@ export function restoreTokenBaseScale(token) {
   restoreTokenBaseMeshAnchor(token, state);
   delete mesh._perspectiveLevelsAppliedScale;
   state.lastPerspectiveScale = 1;
+  refreshTokenPerspectiveFrame(token, getLevelConfig(), { force: true });
   return true;
 }
 
@@ -970,12 +1021,14 @@ export function applyPerspectiveToToken(token, { scheduleSort = true } = {}) {
     restoreTokenBaseScale(token);
     applyTokenRenderElevation(token);
     destroyFlightShadow(token, ORIGINAL_TOKEN_STATE.get(token));
+    refreshTokenPerspectiveFrame(token, config);
     if (scheduleSort) schedulePerspectiveSort({ token });
     return;
   }
 
   if (!mesh || mesh.destroyed) {
     destroyFlightShadow(token, ORIGINAL_TOKEN_STATE.get(token));
+    refreshTokenPerspectiveFrame(token, config);
     if (scheduleSort) schedulePerspectiveSort({ token });
     return;
   }
@@ -995,6 +1048,7 @@ export function applyPerspectiveToToken(token, { scheduleSort = true } = {}) {
   applyTokenVerticalAlignment(token, mesh, state, scale, config, rect);
   mesh._perspectiveLevelsAppliedScale = scale;
   state.lastPerspectiveScale = scale;
+  refreshTokenPerspectiveFrame(token, config);
   updateFlightShadow(token, state, scale, config, rect, model);
 
   if (scheduleSort) schedulePerspectiveSort({ token });
