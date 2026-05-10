@@ -161,6 +161,15 @@ function getTokenRect(token, rect = getSceneRect()) {
   return { x, y, width, height };
 }
 
+function getTokenBottomCenter(token, rect = getSceneRect()) {
+  const tokenRect = getTokenRect(token, rect);
+  if (!tokenRect) return null;
+  return {
+    x: tokenRect.x + tokenRect.width / 2,
+    y: tokenRect.y + tokenRect.height
+  };
+}
+
 function pointInsideTokenRect(point, token, rect = getSceneRect()) {
   const tokenRect = getTokenRect(token, rect);
   if (!tokenRect) return false;
@@ -206,12 +215,14 @@ function findTokenAtWaypoint(point, rect = getSceneRect()) {
   }
 
   candidates.sort((a, b) => {
-    // Prefer elevated tokens: the bug this solves is mostly the target side of
-    // a flying token, where Foundry often supplies a zero-elevation waypoint.
-    if (Math.abs(b.elevation - a.elevation) > 0.0001) return b.elevation - a.elevation;
     if (a.controlled !== b.controlled) return a.controlled - b.controlled;
     if (a.targeted !== b.targeted) return a.targeted - b.targeted;
-    return a.distanceToCenter - b.distanceToCenter;
+    if (Math.abs(a.distanceToCenter - b.distanceToCenter) > 0.0001) return a.distanceToCenter - b.distanceToCenter;
+
+    // Keep elevation only as a final tie-breaker. When a ground token stands
+    // under a flying token, choosing "highest token under the point" can make
+    // A->B and B->A disagree depending on which side supplied the waypoint.
+    return b.elevation - a.elevation;
   });
 
   return candidates[0]?.token ?? null;
@@ -241,12 +252,23 @@ function normalizeMeasurementWaypoint(point, config = getLevelConfig(), rect = g
   const token = findTokenAtWaypoint(point, rect);
   const tokenElevation = getTokenElevation(token);
 
-  // Foundry/system range checks may pass target waypoints with elevation: 0 even
-  // when the point is visibly inside an elevated token. In perspective mode that
-  // makes A->B and B->A produce different ranges. Treat non-zero TokenDocument
-  // elevation as the authoritative 3D height for token endpoints.
-  if (Number.isFinite(tokenElevation) && Math.abs(tokenElevation) > 0.0001) {
+  // Foundry/system range checks may pass endpoint elevations derived from a
+  // center point or from the other side of the measurement. For token endpoints
+  // the TokenDocument elevation is the authoritative bottom elevation, including
+  // zero for creatures standing on the grid.
+  if (Number.isFinite(tokenElevation)) {
     p.elevation = tokenElevation;
+
+    // Elevated tokens store their canvas position as the drawn visual point.
+    // Use the token bottom instead of an arbitrary center/hover waypoint so the
+    // projection inverse recovers the same ground cell that the shadow uses.
+    if (Math.abs(tokenElevation) > 0.0001) {
+      const tokenPoint = getTokenBottomCenter(token, rect);
+      if (tokenPoint) {
+        p.x = tokenPoint.x;
+        p.y = tokenPoint.y;
+      }
+    }
   } else if (Number.isFinite(explicitElevation)) {
     p.elevation = explicitElevation;
   }
