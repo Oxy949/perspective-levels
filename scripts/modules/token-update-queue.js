@@ -3,6 +3,9 @@ import { getLevelConfig, isPerspectiveEnabled } from "./config.js";
 import { applyPerspectiveToToken, isTokenObject, schedulePerspectiveSort } from "./tokens.js";
 
 const PENDING_PERSPECTIVE_UPDATES = new Set();
+const PENDING_PERSPECTIVE_TOKEN_ONLY_UPDATES = new Set();
+const PENDING_PERSPECTIVE_UPDATE_BURSTS = new Map();
+const PERSPECTIVE_UPDATE_BURST_DELAYS_MS = [0, 50, 125, 250, 500];
 let PENDING_PERSPECTIVE_RAF = null;
 
 function addTokenLikeToSet(value, set, seen = new Set()) {
@@ -74,7 +77,9 @@ function applyPerspectiveToTokenAndPreviews(token, touchedTokens) {
 
 function flushPerspectiveUpdates() {
   const tokens = [...PENDING_PERSPECTIVE_UPDATES];
+  const tokenOnly = [...PENDING_PERSPECTIVE_TOKEN_ONLY_UPDATES].filter(token => !PENDING_PERSPECTIVE_UPDATES.has(token));
   PENDING_PERSPECTIVE_UPDATES.clear();
+  PENDING_PERSPECTIVE_TOKEN_ONLY_UPDATES.clear();
   PENDING_PERSPECTIVE_RAF = null;
 
   const config = getLevelConfig();
@@ -89,16 +94,62 @@ function flushPerspectiveUpdates() {
     }
   }
 
+  for (const token of tokenOnly) {
+    try {
+      applyPerspectiveToToken(token, { scheduleSort: false });
+      touchedTokens.add(token);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Failed to update token perspective`, err);
+    }
+  }
+
   if (touchedTokens.size) schedulePerspectiveSort({ tokens: touchedTokens });
 }
 
-export function schedulePerspectiveUpdate(token) {
+export function schedulePerspectiveUpdate(token, { includePreviews = true } = {}) {
   if (!token) return;
-  PENDING_PERSPECTIVE_UPDATES.add(token);
+  if (includePreviews) PENDING_PERSPECTIVE_UPDATES.add(token);
+  else PENDING_PERSPECTIVE_TOKEN_ONLY_UPDATES.add(token);
   if (PENDING_PERSPECTIVE_RAF) return;
 
   const raf = globalThis.requestAnimationFrame ?? ((fn) => globalThis.setTimeout(fn, 16));
   PENDING_PERSPECTIVE_RAF = raf(flushPerspectiveUpdates);
+}
+
+function clearPerspectiveUpdateBurst(token) {
+  const timers = PENDING_PERSPECTIVE_UPDATE_BURSTS.get(token);
+  if (!timers) return;
+
+  for (const timer of timers) {
+    try { globalThis.clearTimeout(timer); } catch (_err) { /* noop */ }
+  }
+
+  PENDING_PERSPECTIVE_UPDATE_BURSTS.delete(token);
+}
+
+export function schedulePerspectiveTokenUpdateBurst(token, delays = PERSPECTIVE_UPDATE_BURST_DELAYS_MS) {
+  if (!token) return;
+  clearPerspectiveUpdateBurst(token);
+
+  const timers = new Set();
+  PENDING_PERSPECTIVE_UPDATE_BURSTS.set(token, timers);
+
+  for (const delay of delays) {
+    const n = Number(delay) || 0;
+    if (n <= 0) {
+      schedulePerspectiveUpdate(token, { includePreviews: false });
+      continue;
+    }
+
+    const timer = globalThis.setTimeout(() => {
+      timers.delete(timer);
+      if (!token.destroyed) schedulePerspectiveUpdate(token, { includePreviews: false });
+      if (!timers.size) PENDING_PERSPECTIVE_UPDATE_BURSTS.delete(token);
+    }, n);
+    timers.add(timer);
+  }
+
+  if (!timers.size) PENDING_PERSPECTIVE_UPDATE_BURSTS.delete(token);
 }
 
 export function applyPerspectiveUpdateNow(token) {
@@ -118,4 +169,17 @@ export function applyOrSchedulePerspectiveUpdate(token) {
     console.warn(`${MODULE_ID} | Failed to update token perspective immediately`, err);
     schedulePerspectiveUpdate(token);
   }
+}
+
+export function clearPerspectiveUpdateState() {
+  PENDING_PERSPECTIVE_UPDATES.clear();
+  PENDING_PERSPECTIVE_TOKEN_ONLY_UPDATES.clear();
+  if (PENDING_PERSPECTIVE_RAF) {
+    const caf = globalThis.cancelAnimationFrame ?? globalThis.clearTimeout;
+    try { caf(PENDING_PERSPECTIVE_RAF); } catch (_err) { /* noop */ }
+    PENDING_PERSPECTIVE_RAF = null;
+  }
+
+  for (const token of [...PENDING_PERSPECTIVE_UPDATE_BURSTS.keys()]) clearPerspectiveUpdateBurst(token);
+  PENDING_PERSPECTIVE_UPDATE_BURSTS.clear();
 }

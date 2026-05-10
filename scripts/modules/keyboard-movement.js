@@ -12,7 +12,7 @@ import {
   getKeyboardIncrementScale,
   wrapPrototypeMethod
 } from "./foundry-helpers.js";
-import { schedulePerspectiveUpdate } from "./token-update-queue.js";
+import { schedulePerspectiveTokenUpdateBurst } from "./token-update-queue.js";
 import { schedulePerspectiveSort } from "./tokens.js";
 import { clamp } from "./utils.js";
 
@@ -104,7 +104,7 @@ export function installPerspectiveTokenLayerMovementPatch() {
         }));
       }
 
-      for (const object of objects) schedulePerspectiveUpdate(object);
+      for (const object of objects) schedulePerspectiveTokenUpdateBurst(object);
       schedulePerspectiveSort({ tokens: objects, debounce: true });
       return objects;
     } catch (err) {

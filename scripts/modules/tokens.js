@@ -236,6 +236,32 @@ function isFlightShadowForToken(child, token) {
   return child?.name === FLIGHT_SHADOW_NAME && child?._perspectiveLevelsTokenKey === getTokenShadowKey(token);
 }
 
+function getFlightShadowCandidateParents(token) {
+  return [
+    token,
+    token?.parent,
+    token?.mesh?.parent,
+    globalThis.canvas?.primary,
+    globalThis.canvas?.tokens?.objects,
+    globalThis.canvas?.tokens
+  ];
+}
+
+function collectFlightShadowCandidates(token, state = null) {
+  const candidates = new Set();
+  if (state?.flightShadow) candidates.add(state.flightShadow);
+
+  for (const parent of getFlightShadowCandidateParents(token)) {
+    const children = parent?.children;
+    if (!Array.isArray(children)) continue;
+    for (const child of children) {
+      if (isFlightShadowForToken(child, token)) candidates.add(child);
+    }
+  }
+
+  return candidates;
+}
+
 function destroyDisplayObject(object) {
   if (!object || object.destroyed) return;
   try { object.destroy({ children: true }); }
@@ -246,23 +272,34 @@ function destroyDisplayObject(object) {
 }
 
 function destroyFlightShadow(token, state = ORIGINAL_TOKEN_STATE.get(token)) {
-  const candidates = new Set();
-  if (state?.flightShadow) candidates.add(state.flightShadow);
-
-  for (const parent of [token, token?.parent, token?.mesh?.parent, globalThis.canvas?.primary, globalThis.canvas?.tokens?.objects, globalThis.canvas?.tokens]) {
-    const children = parent?.children;
-    if (!Array.isArray(children)) continue;
-    for (const child of children) {
-      if (isFlightShadowForToken(child, token)) candidates.add(child);
-    }
-  }
-
-  for (const candidate of candidates) destroyDisplayObject(candidate);
+  for (const candidate of collectFlightShadowCandidates(token, state)) destroyDisplayObject(candidate);
 
   if (state) {
     state.flightShadow = null;
     state.flightShadowParent = null;
   }
+}
+
+function adoptFlightShadow(token, state, parent) {
+  const key = getTokenShadowKey(token);
+  const candidates = collectFlightShadowCandidates(token, state);
+  let shadow = null;
+
+  for (const candidate of candidates) {
+    if (!candidate || candidate.destroyed || candidate._perspectiveLevelsTokenKey !== key) continue;
+    if (candidate === state?.flightShadow) {
+      shadow = candidate;
+      break;
+    }
+    if (!shadow || candidate.parent === parent) shadow = candidate;
+  }
+
+  for (const candidate of candidates) {
+    if (candidate !== shadow) destroyDisplayObject(candidate);
+  }
+
+  if (shadow && state) state.flightShadow = shadow;
+  return shadow;
 }
 
 function getFlightShadowParent(token) {
@@ -300,7 +337,7 @@ function ensureFlightShadow(token, state) {
   const parent = getFlightShadowParent(token);
   if (!parent) return null;
 
-  let shadow = state.flightShadow;
+  let shadow = adoptFlightShadow(token, state, parent);
   if (!shadow || shadow.destroyed) {
     shadow = new PIXI.Graphics();
     shadow.name = FLIGHT_SHADOW_NAME;

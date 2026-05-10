@@ -9,12 +9,18 @@ function normalizeRotation(value) {
   return wrapped > 180 ? wrapped - 360 : wrapped;
 }
 
-function round4(value) {
-  const n = Number(value) || 0;
-  return Number(n.toFixed(4));
-}
-
 const AUTO_SAVE_DEBOUNCE_MS = 350;
+const EDGE_HIT_PADDING = 72;
+
+function getCalibratorHitArea(rect = getSceneRect()) {
+  const padding = Math.max(EDGE_HIT_PADDING, rect.gridSize * 0.75);
+  return new PIXI.Rectangle(
+    rect.x - padding,
+    rect.y - padding,
+    rect.width + padding * 2,
+    rect.height + padding * 2
+  );
+}
 
 export class PerspectiveCalibrator {
   constructor({ refresh = () => {}, drawGrid = () => {} } = {}) {
@@ -54,7 +60,7 @@ export class PerspectiveCalibrator {
     this.container.sortableChildren = true;
 
     const rect = getSceneRect();
-    this.container.hitArea = new PIXI.Rectangle(rect.x, rect.y, rect.width, rect.height);
+    this.container.hitArea = getCalibratorHitArea(rect);
     canvas.interface.addChild(this.container);
 
     this.anchors.far = this._createAnchor("far", i18n("PERSPECTIVE_LEVELS.FarAnchor"), 0x4aa3ff);
@@ -62,7 +68,9 @@ export class PerspectiveCalibrator {
     this.container.addChild(this.anchors.far, this.anchors.near);
 
     this.container.on("pointermove", event => this._onPointerMove(event));
+    this.container.on("globalpointermove", event => this._onPointerMove(event));
     this.container.on("pointerup", () => this._stopDrag());
+    this.container.on("globalpointerup", () => this._stopDrag());
     this.container.on("pointerupoutside", () => this._stopDrag());
 
     this._createPanel();
@@ -185,24 +193,7 @@ export class PerspectiveCalibrator {
       anchor.alpha = 0.75;
     });
 
-    // Как у токенов Foundry: навёл на якорь и крути колёсико мыши.
-    // Без Shift — крупный шаг, с Shift — точная доводка.
-    anchor.on("wheel", event => {
-      event.stopPropagation?.();
-      event.preventDefault?.();
-      const original = event.originalEvent ?? event;
-      const step = original?.shiftKey ? 5 : 15;
-      const direction = Number(original?.deltaY ?? 0) > 0 ? step : -step;
-      this._rotateAnchor(key, direction);
-    });
-
     return anchor;
-  }
-
-  _rotateAnchor(key, delta) {
-    if (!this.config?.[key]) return;
-    this.config[key].rotation = round4(normalizeRotation((Number(this.config[key].rotation) || 0) + delta));
-    this._applyConfigChange({ autosave: true, syncPanel: true });
   }
 
   _onPointerMove(event) {
@@ -210,8 +201,13 @@ export class PerspectiveCalibrator {
 
     const point = event.getLocalPosition(this.container.parent);
     const normalized = pointToAnchor(point, getSceneRect());
-    this.config[this.dragging].x = Number(normalized.x.toFixed(4));
-    this.config[this.dragging].y = Number(normalized.y.toFixed(4));
+    const key = this.dragging;
+    const nextX = Number(normalized.x.toFixed(4));
+    const nextY = Number(normalized.y.toFixed(4));
+    if (!this.config?.[key] || (this.config[key].x === nextX && this.config[key].y === nextY)) return;
+
+    this.config[key].x = nextX;
+    this.config[key].y = nextY;
     this._applyConfigChange({ autosave: true });
   }
 
@@ -315,6 +311,7 @@ export class PerspectiveCalibrator {
     if (!this.container || !this.config) return;
 
     const rect = getSceneRect();
+    this.container.hitArea = getCalibratorHitArea(rect);
     const model = getPerspectiveGridModel(this.config, rect);
 
     for (const key of ["far", "near"]) {
@@ -329,6 +326,12 @@ export class PerspectiveCalibrator {
       const left = { x: line.left.x - center.x, y: line.left.y - center.y };
       const right = { x: line.right.x - center.x, y: line.right.y - center.y };
       const handleLength = Math.min(36, Math.max(12, rect.gridSize * 0.28));
+      const hitPadding = Math.max(24, handleLength);
+      const hitMinX = Math.min(left.x, right.x, -handleLength) - hitPadding;
+      const hitMaxX = Math.max(left.x, right.x, handleLength) + hitPadding;
+      const hitMinY = Math.min(left.y, right.y, -handleLength) - hitPadding;
+      const hitMaxY = Math.max(left.y, right.y, handleLength) + hitPadding;
+      anchor.hitArea = new PIXI.Rectangle(hitMinX, hitMinY, hitMaxX - hitMinX, hitMaxY - hitMinY);
 
       // Широкая почти невидимая линия нужна как удобная область наведения/колёсика.
       anchor.gfx.lineStyle({ width: 18, color: anchor._plColor, alpha: 0.04 });
@@ -351,7 +354,12 @@ export class PerspectiveCalibrator {
       anchor.gfx.drawCircle(right.x, right.y, Math.max(4, rect.gridSize * 0.06));
       anchor.gfx.endFill?.();
 
-      anchor.label.y = handleLength + 8;
+      const labelHeight = Number(anchor.label.height) || 20;
+      const labelGap = 8;
+      const sceneBottom = rect.y + rect.height;
+      const placeLabelAbove = center.y + handleLength + labelGap + labelHeight > sceneBottom - 4;
+      anchor.label.anchor.set(0.5, placeLabelAbove ? 1 : 0);
+      anchor.label.y = placeLabelAbove ? -handleLength - labelGap : handleLength + labelGap;
     }
 
     this.drawGrid();

@@ -32,6 +32,7 @@ import {
   scheduleActorStatusIconRefreshBurst,
   scheduleTokenStatusIconRefreshBurst
 } from "./status-effects.js";
+import { clearPerspectiveUpdateState } from "./token-update-queue.js";
 import {
   applyPerspectiveToToken,
   clearPerspectiveSortState,
@@ -196,6 +197,7 @@ export function registerHooks() {
     forEachToken(removePerspectiveFromToken);
     clearTokenScaleState();
     clearPerspectiveSortState();
+    clearPerspectiveUpdateState();
     clearTokenStatusIconRefreshState();
   });
 
