@@ -4,6 +4,7 @@ import { applyPerspectiveMeasurement } from "./measurement.js";
 import { getTokenClass, wrapPrototypeMethod } from "./foundry-helpers.js";
 import { applyOrSchedulePerspectiveUpdate, schedulePerspectiveUpdate } from "./token-update-queue.js";
 import { installTokenFlightDragPatches } from "./token-flight.js";
+import { applyPerspectiveToToken } from "./tokens.js";
 
 export function installTokenPerspectiveLifecyclePatches() {
   const TokenClass = getTokenClass();
@@ -34,6 +35,16 @@ export function installTokenPerspectiveLifecyclePatches() {
 
   for (const method of ["_refreshPosition", "_refreshMesh", "_refreshMeshSizeAndScale", "_updateDragDestination", "_onHoverIn", "_onHoverOut", "control", "release", "setTarget"]) {
     wrapPrototypeMethod(proto, method, genericUpdateHandler);
+  }
+
+  // Sorting itself refreshes elevation. Update the shadow without queuing another
+  // sort here, otherwise every sort would schedule the next animation frame.
+  for (const method of ["_refreshElevation", "_refreshState", "_refreshVisibility"]) {
+    wrapPrototypeMethod(proto, method, function(original, args) {
+      const result = original.apply(this, args);
+      applyPerspectiveToToken(this, { scheduleSort: false });
+      return result;
+    });
   }
 
   if (typeof proto.measureMovementPath === "function" && !proto.measureMovementPath._perspectiveLevelsWrapped) {

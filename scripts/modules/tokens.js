@@ -57,6 +57,8 @@ function getTokenSignature(token) {
     token.document?.height ?? "",
     texture.scaleX ?? "",
     texture.scaleY ?? "",
+    texture.anchorX ?? "",
+    texture.anchorY ?? "",
     texture.offsetX ?? "",
     texture.offsetY ?? "",
     texture.rotation ?? "",
@@ -133,7 +135,10 @@ function setMeshAnchorY(mesh, y) {
   }
 }
 
-function resolveTokenBaseMeshAnchorY(mesh, state = null) {
+function resolveTokenBaseMeshAnchorY(token, mesh, state = null) {
+  const documentAnchor = token?.document?.texture?.anchorY;
+  if (documentAnchor !== undefined && documentAnchor !== null && Number.isFinite(Number(documentAnchor))) return Number(documentAnchor);
+
   const current = getMeshAnchorY(mesh);
   if (current === null) return null;
 
@@ -148,8 +153,8 @@ function resolveTokenBaseMeshAnchorY(mesh, state = null) {
   return current;
 }
 
-function updateTokenBaseMeshAnchorY(mesh, state) {
-  const baseAnchorY = resolveTokenBaseMeshAnchorY(mesh, state);
+function updateTokenBaseMeshAnchorY(token, mesh, state) {
+  const baseAnchorY = resolveTokenBaseMeshAnchorY(token, mesh, state);
   state.baseAnchorY = baseAnchorY;
   return baseAnchorY;
 }
@@ -158,7 +163,7 @@ function restoreTokenBaseMeshAnchor(token, state = ORIGINAL_TOKEN_STATE.get(toke
   const mesh = token?.mesh;
   if (!state || !mesh || mesh.destroyed || state.meshRef !== mesh) return false;
 
-  const baseAnchorY = updateTokenBaseMeshAnchorY(mesh, state);
+  const baseAnchorY = updateTokenBaseMeshAnchorY(token, mesh, state);
   if (baseAnchorY === null) return false;
 
   const restored = setMeshAnchorY(mesh, baseAnchorY);
@@ -233,7 +238,7 @@ function getTokenShadowKey(token) {
 }
 
 function isFlightShadowForToken(child, token) {
-  return child?.name === FLIGHT_SHADOW_NAME && child?._perspectiveLevelsTokenKey === getTokenShadowKey(token);
+  return child?.name === FLIGHT_SHADOW_NAME && child?._perspectiveLevelsToken === token;
 }
 
 function getFlightShadowCandidateParents(token) {
@@ -286,7 +291,7 @@ function adoptFlightShadow(token, state, parent) {
   let shadow = null;
 
   for (const candidate of candidates) {
-    if (!candidate || candidate.destroyed || candidate._perspectiveLevelsTokenKey !== key) continue;
+    if (!candidate || candidate.destroyed || candidate._perspectiveLevelsTokenKey !== key || candidate._perspectiveLevelsToken !== token) continue;
     if (candidate === state?.flightShadow) {
       shadow = candidate;
       break;
@@ -315,6 +320,8 @@ function placeFlightShadowBelowToken(token, state) {
   if (!shadow || !parent || shadow.destroyed) return;
 
   const baseSort = Number(token?.mesh?.sort ?? token?.mesh?.zIndex ?? token?.document?.sort ?? 0) || 0;
+  shadow.elevation = getTokenRenderElevation(token);
+  shadow.sortLayer = token?.mesh?.sortLayer ?? 0;
   shadow.sort = baseSort - 1;
   shadow.zIndex = baseSort - 1;
 
@@ -339,13 +346,15 @@ function ensureFlightShadow(token, state) {
 
   let shadow = adoptFlightShadow(token, state, parent);
   if (!shadow || shadow.destroyed) {
-    shadow = new PIXI.Graphics();
+    const GraphicsClass = globalThis.foundry?.canvas?.primary?.PrimaryGraphics ?? PIXI.Graphics;
+    shadow = new GraphicsClass();
     shadow.name = FLIGHT_SHADOW_NAME;
     shadow.eventMode = "none";
     shadow.interactive = false;
     shadow.interactiveChildren = false;
     shadow.cullable = false;
     shadow._perspectiveLevelsTokenKey = getTokenShadowKey(token);
+    shadow._perspectiveLevelsToken = token;
     state.flightShadow = shadow;
   }
 
@@ -396,7 +405,7 @@ function drawFlightShadow(graphics, radiusX, radiusY, alpha) {
   graphics.clear?.();
 
   // Несколько вложенных эллипсов дают мягкую, но дешёвую тень без BlurFilter:
-  // на больших сценах это безопаснее, чем отдельный filter на каждый летающий токен.
+  // на больших сценах это безопаснее, чем отдельный filter на каждый токен.
   drawFilledEllipse(graphics, radiusX * 1.35, radiusY * 1.45, alpha * 0.16);
   drawFilledEllipse(graphics, radiusX * 1.08, radiusY * 1.12, alpha * 0.34);
   drawFilledEllipse(graphics, radiusX * 0.78, radiusY * 0.72, alpha * 0.52);
@@ -404,10 +413,6 @@ function drawFlightShadow(graphics, radiusX, radiusY, alpha) {
 
 function updateFlightShadow(token, state, perspectiveScale, config, rect = getSceneRect(), model = null) {
   const elevation = getTokenElevation(token);
-  if (!(elevation > 0.001)) {
-    destroyFlightShadow(token, state);
-    return;
-  }
 
   const shadow = ensureFlightShadow(token, state);
   if (!shadow) return;
@@ -430,8 +435,8 @@ function updateFlightShadow(token, state, perspectiveScale, config, rect = getSc
   const radiusY = clamp(Math.min(visualHeight * 0.11, cellHeight * 0.48) * heightFade, 2.5, radiusX * 0.34);
   const alpha = clamp(0.38 - heightSpaces * 0.018, 0.14, 0.38);
 
-  shadow.visible = true;
-  shadow.alpha = 1;
+  shadow.visible = token.visible !== false && token.renderable !== false && token.mesh?.visible !== false && token.mesh?.renderable !== false;
+  shadow.alpha = clamp(token.mesh?.alpha ?? token.alpha ?? 1, 0, 1);
   shadow.rotation = 0;
   shadow.scale?.set?.(1, 1);
   shadow.position?.set?.(parentPoint.x, parentPoint.y);
@@ -458,6 +463,10 @@ function getPerspectiveFrameSignature(token, config = getLevelConfig()) {
     Number(getTextureDimension(token?.mesh, "y") ?? 0).toFixed(2),
     Number(token?.mesh?.scale?.x ?? 0).toFixed(6),
     Number(token?.mesh?.scale?.y ?? 0).toFixed(6),
+    Number(token?.mesh?.anchor?.x ?? 0.5).toFixed(6),
+    Number(token?.mesh?.anchor?.y ?? 0.5).toFixed(6),
+    Number(token?.mesh?.position?.x ?? 0).toFixed(2),
+    Number(token?.mesh?.position?.y ?? 0).toFixed(2),
     token?.shape?.constructor?.name ?? ""
   ].join("|");
 }
@@ -569,7 +578,8 @@ function getTokenState(token, mesh, rect = getSceneRect()) {
   if (!base) base = calculateFallbackBaseScale(mesh);
 
   cleanupTokenVisuals(token, state);
-  const baseAnchorY = resolveTokenBaseMeshAnchorY(mesh, state);
+  const baseAnchorY = resolveTokenBaseMeshAnchorY(token, mesh, state);
+  if (baseAnchorY !== null) setMeshAnchorY(mesh, baseAnchorY);
 
   state = {
     signature,
@@ -608,29 +618,25 @@ export function restoreTokenBaseScale(token) {
   return true;
 }
 
-function calculateTokenVerticalAlignOffsetY(token, mesh, state, perspectiveScale, config, rect = getSceneRect()) {
-  const align = clamp(config?.tokenArtVerticalAlign ?? 0.5, 0, 1);
-  const logicalHeight = getTokenLogicalSize(token, "y", rect);
-  const textureHeight = getTextureDimension(mesh, "y");
-  const artHeight = Math.abs((Number(textureHeight) || 0) * (Number(state?.baseScaleY) || 0) * (Number(perspectiveScale) || 1));
-
-  if (!Number.isFinite(logicalHeight) || logicalHeight <= 0 || !Number.isFinite(artHeight) || artHeight <= 0) return 0;
-  return (0.5 - align) * (logicalHeight - artHeight);
-}
-
-function applyTokenVerticalAlignment(token, mesh, state, perspectiveScale, config, rect = getSceneRect()) {
-  const baseAnchorY = updateTokenBaseMeshAnchorY(mesh, state);
+function applyTokenVerticalAlignment(token, mesh, state, config, rect = getSceneRect()) {
+  const baseAnchorY = updateTokenBaseMeshAnchorY(token, mesh, state);
   if (baseAnchorY === null) return;
 
-  const offsetY = calculateTokenVerticalAlignOffsetY(token, mesh, state, perspectiveScale, config, rect);
-  const textureHeight = getTextureDimension(mesh, "y");
-  const artHeight = Math.abs((Number(textureHeight) || 0) * (Number(state?.baseScaleY) || 0) * (Number(perspectiveScale) || 1));
+  const align = clamp(config?.tokenArtVerticalAlign ?? 0.5, 0, 1);
+  const logicalHeight = getTokenLogicalSize(token, "y", rect);
+  const signedArtHeight = (getTextureDimension(mesh, "y") ?? 0) * (Number(mesh.scale?.y) || 0);
+  const artHeight = Math.abs(signedArtHeight);
   if (!Number.isFinite(artHeight) || artHeight <= 0.0001) return;
 
-  const anchorOffsetY = -offsetY / artHeight;
-  if (setMeshAnchorY(mesh, baseAnchorY + anchorOffsetY)) {
-    state.lastAnchorOffsetY = anchorOffsetY;
-    mesh._perspectiveLevelsAnchorOffsetY = anchorOffsetY;
+  const tokenY = Number(token.position?.y ?? token.y ?? token.document?.y ?? 0) || 0;
+  const meshY = Number(mesh.position?.y ?? tokenY + logicalHeight / 2) - tokenY;
+  const artTop = (logicalHeight - artHeight) * (1 - align);
+  // Align the actual art bounds, including tall textures, custom anchors and
+  // vertical mirroring. Recompute absolutely so refreshes cannot accumulate drift.
+  const anchorY = (meshY - artTop) / signedArtHeight + (signedArtHeight < 0 ? 1 : 0);
+  if (setMeshAnchorY(mesh, anchorY)) {
+    state.lastAnchorOffsetY = anchorY - baseAnchorY;
+    mesh._perspectiveLevelsAnchorOffsetY = state.lastAnchorOffsetY;
   }
 }
 
@@ -1057,7 +1063,7 @@ export function applyPerspectiveToToken(token, { scheduleSort = true } = {}) {
   if (!config.tokenScaling) {
     restoreTokenBaseScale(token);
     applyTokenRenderElevation(token);
-    destroyFlightShadow(token, ORIGINAL_TOKEN_STATE.get(token));
+    if (mesh && !mesh.destroyed) updateFlightShadow(token, getTokenState(token, mesh), 1, config);
     refreshTokenPerspectiveFrame(token, config);
     if (scheduleSort) schedulePerspectiveSort({ token });
     return;
@@ -1082,7 +1088,7 @@ export function applyPerspectiveToToken(token, { scheduleSort = true } = {}) {
 
   mesh.scale.set(state.baseScaleX * scale, state.baseScaleY * scale);
   applyTokenRenderElevation(token);
-  applyTokenVerticalAlignment(token, mesh, state, scale, config, rect);
+  applyTokenVerticalAlignment(token, mesh, state, config, rect);
   mesh._perspectiveLevelsAppliedScale = scale;
   state.lastPerspectiveScale = scale;
   refreshTokenPerspectiveFrame(token, config);

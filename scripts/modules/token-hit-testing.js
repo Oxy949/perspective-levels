@@ -39,20 +39,24 @@ function getTextureDimension(mesh, axis) {
   );
 }
 
-function getMeshArtSize(token) {
+function getMeshArtBounds(token, baseBounds) {
   const mesh = token?.mesh;
   if (!mesh || mesh.destroyed) return null;
 
   const textureWidth = getTextureDimension(mesh, "x");
   const textureHeight = getTextureDimension(mesh, "y");
-  const scaleX = Math.abs(finiteNumber(mesh?.scale?.x, 0));
-  const scaleY = Math.abs(finiteNumber(mesh?.scale?.y, 0));
+  const scaleX = finiteNumber(mesh?.scale?.x, 0);
+  const scaleY = finiteNumber(mesh?.scale?.y, 0);
 
   if (!textureWidth || !textureHeight || !scaleX || !scaleY) return null;
-  return {
-    width: textureWidth * scaleX,
-    height: textureHeight * scaleY
-  };
+  const width = textureWidth * scaleX;
+  const height = textureHeight * scaleY;
+  const tokenPosition = getObjectPosition(token);
+  const x = finiteNumber(mesh.position?.x, tokenPosition.x + baseBounds.x + baseBounds.width / 2) - tokenPosition.x;
+  const y = finiteNumber(mesh.position?.y, tokenPosition.y + baseBounds.y + baseBounds.height / 2) - tokenPosition.y;
+  const left = x - finiteNumber(mesh.anchor?.x, 0.5) * width;
+  const top = y - finiteNumber(mesh.anchor?.y, 0.5) * height;
+  return { x: Math.min(left, left + width), y: Math.min(top, top + height), width: Math.abs(width), height: Math.abs(height) };
 }
 
 function getShapeBounds(shape) {
@@ -223,10 +227,8 @@ function getPerspectiveTokenFrameBounds(token, shape, config) {
   if (!bounds || bounds.width <= 0 || bounds.height <= 0) return null;
 
   const align = getPerspectiveShapeAlign(config);
-  const artSize = getMeshArtSize(token);
-  if (artSize?.width > 0 && artSize?.height > 0) {
-    return getAlignedBounds(bounds, artSize.width, artSize.height, align);
-  }
+  const artBounds = getMeshArtBounds(token, bounds);
+  if (artBounds?.width > 0 && artBounds?.height > 0) return artBounds;
 
   return getScaledBounds(bounds, getPerspectiveShapeScale(token), align);
 }
