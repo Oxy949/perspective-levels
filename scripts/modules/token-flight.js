@@ -4,6 +4,7 @@ import { elevationToScreenOffsetAtRow, screenPointToPerspectiveGrid } from "./pr
 import { getSceneGridDistance, getSceneRect } from "./scene.js";
 import { getDocumentPixelSize, isShiftActive, wrapPrototypeMethod } from "./foundry-helpers.js";
 import { schedulePerspectiveUpdate } from "./token-update-queue.js";
+import { beginTokenShadowPreview, endTokenShadowPreview } from "./tokens.js";
 
 const DRAG_STATE = new WeakMap();
 let ACTIVE_DRAG_EVENT_SHIFT = null;
@@ -63,8 +64,14 @@ export function installTokenFlightDragPatches(proto) {
     try {
       const config = getLevelConfig();
       const changes = args[1];
-      if (!globalThis.canvas?.ready || !isPerspectiveEnabled(config)
-        || !(ACTIVE_DRAG_EVENT_SHIFT ?? isShiftActive())
+      if (!globalThis.canvas?.ready || !isPerspectiveEnabled(config)) return result;
+      if (changes?.elevation !== undefined && result) {
+        const state = getFlightDragState(this);
+        state.startY = Number(result.y);
+        state.startElevation = Number(result.elevation);
+        return result;
+      }
+      if (!(ACTIVE_DRAG_EVENT_SHIFT ?? isShiftActive())
         || changes?.y === undefined || changes?.elevation !== undefined
         || !result || !Number.isFinite(Number(result.y))) return result;
 
@@ -81,6 +88,11 @@ export function installTokenFlightDragPatches(proto) {
   wrapPrototypeMethod(proto, "_onDragLeftMove", withDragEvent);
   wrapPrototypeMethod(proto, "_onDragClickLeft", withDragEvent);
 
+  wrapPrototypeMethod(proto, "_onDragStart", function(original, args) {
+    beginTokenShadowPreview(this);
+    return original.apply(this, args);
+  });
+
   wrapPrototypeMethod(proto, "_finalizeDragLeft", function(original, args) {
     const clones = args[0]?.interactionData?.clones ?? [];
     try { return original.apply(this, args); }
@@ -94,6 +106,7 @@ export function installTokenFlightDragPatches(proto) {
     try { return original.apply(this, args); }
     finally {
       const token = this._original ?? this;
+      endTokenShadowPreview(this);
       DRAG_STATE.delete(token);
       if (!token.destroyed) schedulePerspectiveUpdate(token, { includePreviews: false });
     }

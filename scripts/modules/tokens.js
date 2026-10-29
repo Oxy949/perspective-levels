@@ -4,10 +4,13 @@ import { getSceneGridDistance, getSceneRect } from "./scene.js";
 import { getPerspectiveCellScreenHeightAtRow, getPerspectiveGridModel, scaleForPerspectiveToken, screenPointToElevationGroundPoint, screenPointToPerspectiveGrid } from "./projection.js";
 import { positionTokenPerspectiveFrameInfo, resetTokenPerspectiveFrameInfo } from "./token-hit-testing.js";
 import { clamp } from "./utils.js";
+import { getTokenArtMultiplier } from "./token-art.js";
 
 const ORIGINAL_TOKEN_STATE = new WeakMap();
 const TOKEN_BASE_SCALE_BY_DOCUMENT = new Map();
 const TOKEN_BASE_RETRY_COUNT = new WeakMap();
+const TOKEN_SHADOW_PREVIEWS = new WeakMap();
+const ENDED_TOKEN_SHADOW_PREVIEWS = new WeakSet();
 const PERSPECTIVE_SORT_STEP = 100000;
 const PERSPECTIVE_SORT_DEBOUNCE_MS = 90;
 const FLIGHT_SHADOW_NAME = "PerspectiveLevels.FlightShadow";
@@ -53,6 +56,7 @@ function getTokenSignature(token) {
   const texture = token.document?.texture ?? {};
   return [
     texture.src ?? "",
+    texture.fit ?? "",
     token.document?.width ?? "",
     token.document?.height ?? "",
     texture.scaleX ?? "",
@@ -94,7 +98,7 @@ function getDocumentTextureScale(token, axis) {
   const texture = token?.document?.texture ?? {};
   const raw = axis === "x" ? texture.scaleX : texture.scaleY;
   const n = Number(raw);
-  return Number.isFinite(n) && Math.abs(n) > 0.000001 ? n : 1;
+  return Number.isFinite(n) ? n : 1;
 }
 
 function getTokenLogicalSize(token, axis, rect = getSceneRect()) {
@@ -182,15 +186,15 @@ function calculateDocumentBaseScale(token, mesh, rect = getSceneRect()) {
 
   if (!textureWidth || !textureHeight || !logicalWidth || !logicalHeight) return null;
 
-  // Нельзя растягивать изображение отдельно по X/Y до размеров токен-документа:
-  // неквадратные арты после этого плющит в квадрат. Берём единый fit-scale,
-  // как object-fit: contain, а texture.scaleX/Y оставляем пользовательской
-  // настройкой Foundry.
-  const fitScale = Math.min(logicalWidth / textureWidth, logicalHeight / textureHeight);
+  const widthScale = logicalWidth / textureWidth;
+  const heightScale = logicalHeight / textureHeight;
+  const fit = token?.document?.texture?.fit ?? "contain";
+  const fitScale = fit === "cover" ? Math.max(widthScale, heightScale)
+    : fit === "width" ? widthScale : fit === "height" ? heightScale : Math.min(widthScale, heightScale);
 
   return {
-    baseScaleX: fitScale * getDocumentTextureScale(token, "x"),
-    baseScaleY: fitScale * getDocumentTextureScale(token, "y"),
+    baseScaleX: (fit === "fill" ? widthScale : fitScale) * getDocumentTextureScale(token, "x"),
+    baseScaleY: (fit === "fill" ? heightScale : fitScale) * getDocumentTextureScale(token, "y"),
     baseSource: "document"
   };
 }
@@ -235,6 +239,36 @@ function canPersistSceneTokenSort() {
 
 function getTokenShadowKey(token) {
   return String(getTokenDocumentKey(token) ?? token?.id ?? "");
+}
+
+function isTokenShadowVisible(token) {
+  return !token?.destroyed && token?.visible !== false && token?.renderable !== false
+    && token?.mesh && !token.mesh.destroyed && token.mesh.visible !== false && token.mesh.renderable !== false;
+}
+
+function refreshTokenShadowVisibility(original) {
+  const previews = TOKEN_SHADOW_PREVIEWS.get(original);
+  let active = original;
+  for (const preview of previews ?? []) {
+    if (isTokenShadowVisible(preview)) active = preview;
+  }
+  // Foundry leaves the original visible (usually faded) during dragging. Only
+  // one member of the original/preview family should cast a visible shadow.
+  const enabled = getLevelConfig().enabled;
+  for (const token of [original, ...(previews ?? [])]) {
+    const shadow = ORIGINAL_TOKEN_STATE.get(token)?.flightShadow;
+    if (shadow && !shadow.destroyed) shadow.visible = Boolean(enabled && token === active && isTokenShadowVisible(token));
+  }
+}
+
+export function beginTokenShadowPreview(token) {
+  ENDED_TOKEN_SHADOW_PREVIEWS.delete(token);
+}
+
+export function endTokenShadowPreview(token) {
+  if (!token?._original) return;
+  ENDED_TOKEN_SHADOW_PREVIEWS.add(token);
+  destroyFlightShadow(token);
 }
 
 function isFlightShadowForToken(child, token) {
@@ -283,6 +317,11 @@ function destroyFlightShadow(token, state = ORIGINAL_TOKEN_STATE.get(token)) {
     state.flightShadow = null;
     state.flightShadowParent = null;
   }
+  const original = token?._original ?? token;
+  const previews = TOKEN_SHADOW_PREVIEWS.get(original);
+  previews?.delete(token);
+  if (previews && !previews.size) TOKEN_SHADOW_PREVIEWS.delete(original);
+  refreshTokenShadowVisibility(original);
 }
 
 function adoptFlightShadow(token, state, parent) {
@@ -412,6 +451,10 @@ function drawFlightShadow(graphics, radiusX, radiusY, alpha) {
 }
 
 function updateFlightShadow(token, state, perspectiveScale, config, rect = getSceneRect(), model = null) {
+  if (ENDED_TOKEN_SHADOW_PREVIEWS.has(token)) {
+    destroyFlightShadow(token, state);
+    return;
+  }
   const elevation = getTokenElevation(token);
 
   const shadow = ensureFlightShadow(token, state);
@@ -435,13 +478,19 @@ function updateFlightShadow(token, state, perspectiveScale, config, rect = getSc
   const radiusY = clamp(Math.min(visualHeight * 0.11, cellHeight * 0.48) * heightFade, 2.5, radiusX * 0.34);
   const alpha = clamp(0.38 - heightSpaces * 0.018, 0.14, 0.38);
 
-  shadow.visible = token.visible !== false && token.renderable !== false && token.mesh?.visible !== false && token.mesh?.renderable !== false;
   shadow.alpha = clamp(token.mesh?.alpha ?? token.alpha ?? 1, 0, 1);
   shadow.rotation = 0;
   shadow.scale?.set?.(1, 1);
   shadow.position?.set?.(parentPoint.x, parentPoint.y);
   drawFlightShadow(shadow, radiusX, radiusY, alpha);
   placeFlightShadowBelowToken(token, state);
+  const original = token?._original ?? token;
+  if (original !== token) {
+    let previews = TOKEN_SHADOW_PREVIEWS.get(original);
+    if (!previews) TOKEN_SHADOW_PREVIEWS.set(original, previews = new Set());
+    previews.add(token);
+  }
+  refreshTokenShadowVisibility(original);
 }
 function cleanupTokenVisuals(token, state = ORIGINAL_TOKEN_STATE.get(token)) {
   destroyFlightShadow(token, state);
@@ -473,6 +522,10 @@ function getPerspectiveFrameSignature(token, config = getLevelConfig()) {
 
 function refreshTokenPerspectiveFrame(token, config = getLevelConfig(), { force = false } = {}) {
   if (!isTokenObject(token) || token.destroyed) return;
+  if (!globalThis.canvas?.ready) {
+    delete token._perspectiveLevelsFrameSignature;
+    return;
+  }
 
   const signature = getPerspectiveFrameSignature(token, config);
   if (!force && token._perspectiveLevelsFrameSignature === signature) return;
@@ -515,7 +568,8 @@ export function removePerspectiveFromToken(token) {
 
   try {
     if (token.mesh && !token.mesh.destroyed) {
-      token.mesh.scale.set(state.baseScaleX, state.baseScaleY);
+      const base = calculateDocumentBaseScale(token, token.mesh) ?? state;
+      token.mesh.scale.set(base.baseScaleX, base.baseScaleY);
       restoreTokenBaseMeshAnchor(token, state);
       delete token.mesh._perspectiveLevelsAppliedScale;
     }
@@ -543,7 +597,7 @@ function getTokenState(token, mesh, rect = getSceneRect()) {
   // пришлось взять fallback из текущего mesh.scale, но текстура уже прогрузилась,
   // заменить базу на вычисленную из документа токена.
   if (state && state.signature === signature && state.meshRef === mesh) {
-    if (documentBase && state.baseSource !== "document") {
+    if (documentBase) {
       state.baseScaleX = documentBase.baseScaleX;
       state.baseScaleY = documentBase.baseScaleY;
       state.baseSource = documentBase.baseSource;
@@ -948,6 +1002,11 @@ function applyPerspectiveSortNow(config = getLevelConfig(), { persist = false, f
     for (const entry of snapshot.entries) applyTokenDocumentSortLocally(entry.token, entry.sort, { markIfSame: fullRebuild });
     LAST_LOCAL_SORT_SIGNATURE = snapshot.signature;
   } else {
+    // A HUD/manual document update can change sort without changing the cached
+    // depth order. Restore the actual values as well as marking containers dirty.
+    for (const entry of snapshot.entries) {
+      if (Number(entry.token.document.sort) !== entry.sort) applyTokenDocumentSortLocally(entry.token, entry.sort);
+    }
     const tokensToMark = fullRebuild ? snapshot.entries.map(entry => entry.token) : scopedDirtyTokens;
     for (const token of tokensToMark) markFoundrySortDirty(token);
   }
@@ -1060,17 +1119,18 @@ export function applyPerspectiveToToken(token, { scheduleSort = true } = {}) {
 
   const mesh = token.mesh;
 
-  if (!config.tokenScaling) {
-    restoreTokenBaseScale(token);
-    applyTokenRenderElevation(token);
-    if (mesh && !mesh.destroyed) updateFlightShadow(token, getTokenState(token, mesh), 1, config);
+  if (!mesh || mesh.destroyed) {
+    destroyFlightShadow(token, ORIGINAL_TOKEN_STATE.get(token));
     refreshTokenPerspectiveFrame(token, config);
     if (scheduleSort) schedulePerspectiveSort({ token });
     return;
   }
 
-  if (!mesh || mesh.destroyed) {
-    destroyFlightShadow(token, ORIGINAL_TOKEN_STATE.get(token));
+  if (!config.tokenScaling) {
+    const state = getTokenState(token, mesh);
+    restoreTokenBaseScale(token);
+    applyTokenRenderElevation(token);
+    updateFlightShadow(token, state, 1, config);
     refreshTokenPerspectiveFrame(token, config);
     if (scheduleSort) schedulePerspectiveSort({ token });
     return;
@@ -1086,11 +1146,12 @@ export function applyPerspectiveToToken(token, { scheduleSort = true } = {}) {
   const ground = getTokenGroundPoint(token, config, rect, model);
   const scale = scaleForPerspectiveToken(ground, config, rect, model) * tokenScaleMultiplier;
 
-  mesh.scale.set(state.baseScaleX * scale, state.baseScaleY * scale);
+  const artMultiplier = getTokenArtMultiplier(token);
+  mesh.scale.set(state.baseScaleX * scale * artMultiplier, state.baseScaleY * scale * artMultiplier);
   applyTokenRenderElevation(token);
   applyTokenVerticalAlignment(token, mesh, state, config, rect);
-  mesh._perspectiveLevelsAppliedScale = scale;
-  state.lastPerspectiveScale = scale;
+  mesh._perspectiveLevelsAppliedScale = scale * artMultiplier;
+  state.lastPerspectiveScale = scale * artMultiplier;
   refreshTokenPerspectiveFrame(token, config);
   updateFlightShadow(token, state, scale, config, rect, model);
 

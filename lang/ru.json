@@ -9,6 +9,7 @@
   "PERSPECTIVE_LEVELS.FarAnchor": "Дальний якорь",
   "PERSPECTIVE_LEVELS.NearAnchor": "Ближний якорь",
   "PERSPECTIVE_LEVELS.Save": "Сохранить на уровень",
+  "PERSPECTIVE_LEVELS.SaveFailed": "Не удалось сохранить калибровку уровня",
   "PERSPECTIVE_LEVELS.Reset": "Сбросить",
   "PERSPECTIVE_LEVELS.Close": "Закрыть",
   "PERSPECTIVE_LEVELS.GridSection": "Сетка",
@@ -36,6 +37,7 @@
   "PERSPECTIVE_LEVELS.CopyGridSettings": "Копировать параметры сетки",
   "PERSPECTIVE_LEVELS.PasteGridSettings": "Вставить параметры сетки",
   "PERSPECTIVE_LEVELS.GridSettingsCopied": "Параметры сетки скопированы",
+  "PERSPECTIVE_LEVELS.GridSettingsCopyFailed": "Не удалось скопировать параметры сетки в буфер обмена",
   "PERSPECTIVE_LEVELS.GridSettingsPasted": "Параметры сетки вставлены",
   "PERSPECTIVE_LEVELS.InvalidGridSettings": "Неверный формат параметров сетки"
 }

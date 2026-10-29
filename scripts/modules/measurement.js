@@ -16,6 +16,7 @@ function getSquareDiagonalMode() {
   ];
 
   for (const value of candidates) {
+    if (value === null || value === undefined || value === "") continue;
     const n = Number(value);
     if (Number.isFinite(n)) return n;
   }
@@ -23,15 +24,10 @@ function getSquareDiagonalMode() {
   return globalThis.CONST?.GRID_DIAGONALS?.EQUIDISTANT ?? 0;
 }
 
-function alternatingDiagonalSpaces(diagonals, firstCost) {
-  const whole = Math.floor(Math.max(0, diagonals));
-  const fraction = Math.max(0, diagonals - whole);
-  let cost = 0;
-
-  for (let i = 0; i < whole; i++) cost += (i % 2 === 0) ? firstCost : (3 - firstCost);
-  if (fraction > 0) cost += fraction * ((whole % 2 === 0) ? firstCost : (3 - firstCost));
-
-  return cost;
+function alternatingDiagonalSpaces(major, middle, minor, previous, secondFirst) {
+  const offset = secondFirst ? 1 : 0;
+  const before = (Number(previous) || 0) + offset * 1.5;
+  return major + Math.floor((before + middle + minor * 0.5) / 2) - Math.floor(before / 2);
 }
 
 export function squareGridDistanceSpaces(dx, dy) {
@@ -44,16 +40,16 @@ export function squareGridDistanceSpaces(dx, dy) {
 
   switch (mode) {
     case DIAG.EXACT:
-      return Math.hypot(absX, absY);
+      return straight + diagonals * Math.SQRT2;
     case DIAG.APPROXIMATE:
       return straight + (diagonals * 1.5);
     case DIAG.RECTILINEAR:
     case DIAG.ILLEGAL:
       return absX + absY;
     case DIAG.ALTERNATING_1:
-      return straight + alternatingDiagonalSpaces(diagonals, 1);
+      return alternatingDiagonalSpaces(Math.max(absX, absY), diagonals, 0, 0, false);
     case DIAG.ALTERNATING_2:
-      return straight + alternatingDiagonalSpaces(diagonals, 2);
+      return alternatingDiagonalSpaces(Math.max(absX, absY), diagonals, 0, 0, true);
     case DIAG.EQUIDISTANT:
     default:
       return straight + diagonals;
@@ -61,7 +57,7 @@ export function squareGridDistanceSpaces(dx, dy) {
 }
 
 
-export function squareGridDistanceSpaces3D(dx, dy, dz) {
+export function squareGridDistanceSpaces3D(dx, dy, dz, previousDiagonals = 0) {
   const axes = [Math.abs(Number(dx) || 0), Math.abs(Number(dy) || 0), Math.abs(Number(dz) || 0)].sort((a, b) => a - b);
   const [minor, middle, major] = axes;
   const mode = getSquareDiagonalMode();
@@ -69,16 +65,16 @@ export function squareGridDistanceSpaces3D(dx, dy, dz) {
 
   switch (mode) {
     case DIAG.EXACT:
-      return Math.hypot(minor, middle, major);
+      return major + (Math.SQRT2 - 1) * (middle - minor) + (Math.sqrt(3) - 1) * minor;
     case DIAG.APPROXIMATE:
-      return (major - middle) + (middle * 1.5);
+      return major + 0.5 * (middle - minor) + 0.75 * minor;
     case DIAG.RECTILINEAR:
     case DIAG.ILLEGAL:
       return minor + middle + major;
     case DIAG.ALTERNATING_1:
-      return (major - middle) + alternatingDiagonalSpaces(middle, 1);
+      return alternatingDiagonalSpaces(major, middle, minor, previousDiagonals, false);
     case DIAG.ALTERNATING_2:
-      return (major - middle) + alternatingDiagonalSpaces(middle, 2);
+      return alternatingDiagonalSpaces(major, middle, minor, previousDiagonals, true);
     case DIAG.EQUIDISTANT:
     default:
       return major;
@@ -115,6 +111,7 @@ function isFiniteNumber(value) {
 
 function firstFiniteNumber(...values) {
   for (const value of values) {
+    if (value === null || value === undefined || value === "") continue;
     const n = Number(value);
     if (Number.isFinite(n)) return n;
   }
@@ -155,8 +152,8 @@ function getTokenRect(token, rect = getSceneRect()) {
   const document = token?.document ?? token;
   const x = firstFiniteNumber(token?.x, token?.position?.x, document?.x);
   const y = firstFiniteNumber(token?.y, token?.position?.y, document?.y);
-  const width = firstFiniteNumber(token?.w, token?.width, document?.width ? document.width * rect.gridSize : undefined, rect.gridSize);
-  const height = firstFiniteNumber(token?.h, token?.height, document?.height ? document.height * rect.gridSize : undefined, rect.gridSize);
+  const width = firstFiniteNumber(token?.w, document?.width ? document.width * rect.gridSize : undefined, token?.width, rect.gridSize);
+  const height = firstFiniteNumber(token?.h, document?.height ? document.height * rect.gridSize : undefined, token?.height, rect.gridSize);
   if (![x, y, width, height].every(isFiniteNumber)) return null;
   return { x, y, width, height };
 }
@@ -233,6 +230,7 @@ function getExplicitWaypointElevation(point) {
 
   for (const key of ["elevation", "z", "k"]) {
     if (Object.hasOwn(point, key)) {
+      if (point[key] === null || point[key] === undefined || point[key] === "") continue;
       const n = Number(point[key]);
       if (Number.isFinite(n)) return n;
     }
@@ -249,7 +247,7 @@ function getExplicitWaypointElevation(point) {
 function normalizeMeasurementWaypoint(point, config = getLevelConfig(), rect = getSceneRect()) {
   const p = getPointXY(point);
   const explicitElevation = getExplicitWaypointElevation(point);
-  const token = findTokenAtWaypoint(point, rect);
+  const token = getWaypointTokenCandidate(point) ?? (explicitElevation === undefined ? findTokenAtWaypoint(point, rect) : null);
   const tokenElevation = getTokenElevation(token);
 
   // Foundry/system range checks may pass endpoint elevations derived from a
@@ -276,7 +274,7 @@ function normalizeMeasurementWaypoint(point, config = getLevelConfig(), rect = g
   return p;
 }
 
-export function perspectiveDistanceBetween(a, b, config = getLevelConfig(), rect = getSceneRect()) {
+export function perspectiveDistanceBetween(a, b, config = getLevelConfig(), rect = getSceneRect(), previousDiagonals = 0) {
   const paRaw = screenPointToPerspectiveGrid(normalizeMeasurementWaypoint(a, config, rect), config, rect);
   const pbRaw = screenPointToPerspectiveGrid(normalizeMeasurementWaypoint(b, config, rect), config, rect);
   const pa = snapPerspectiveGridToCells(paRaw);
@@ -295,7 +293,7 @@ export function perspectiveDistanceBetween(a, b, config = getLevelConfig(), rect
   // to the nearest cell as well, so 3D distance is symmetric and cell-based.
   const dzGridCells = roundElevationToGridCells(pb.elevation - pa.elevation, gridDistance);
 
-  const distanceSpaces = squareGridDistanceSpaces3D(dxGridCells, dyGridCells, dzGridCells);
+  const distanceSpaces = squareGridDistanceSpaces3D(dxGridCells, dyGridCells, dzGridCells, previousDiagonals);
   const euclideanSpaces = Math.hypot(dxGridCells, dyGridCells, dzGridCells);
   const diagonalAxes = [Math.abs(dxGridCells), Math.abs(dyGridCells), Math.abs(dzGridCells)].sort((a, b) => a - b);
 
@@ -303,13 +301,15 @@ export function perspectiveDistanceBetween(a, b, config = getLevelConfig(), rect
     distance: distanceSpaces * gridDistance,
     euclidean: euclideanSpaces * gridDistance,
     cost: distanceSpaces * gridDistance,
-    spaces: distanceSpaces,
-    diagonals: diagonalAxes[1] ?? 0
+    spaces: getSquareDiagonalMode() === globalThis.CONST?.GRID_DIAGONALS?.ILLEGAL
+      ? diagonalAxes.reduce((sum, axis) => sum + axis, 0) : diagonalAxes[2],
+    diagonals: getSquareDiagonalMode() === globalThis.CONST?.GRID_DIAGONALS?.ILLEGAL ? 0 : diagonalAxes[1],
+    diagonalWeight: diagonalAxes[1] + diagonalAxes[0] * 0.5
   };
 }
 
 export function buildPerspectiveMeasurement(waypoints, config = getLevelConfig(), rect = getSceneRect()) {
-  const points = safeArray(waypoints).map(point => normalizeMeasurementWaypoint(point, config, rect));
+  const points = safeArray(waypoints);
   const measuredWaypoints = points.map(() => ({
     distance: 0,
     euclidean: 0,
@@ -326,9 +326,13 @@ export function buildPerspectiveMeasurement(waypoints, config = getLevelConfig()
   let totalCost = 0;
   let totalSpaces = 0;
   let totalDiagonals = 0;
+  let diagonalWeight = 0;
 
   for (let i = 1; i < points.length; i++) {
-    const measurement = perspectiveDistanceBetween(points[i - 1], points[i], config, rect);
+    const measurement = points[i]?.measure === false
+      ? { distance: 0, euclidean: 0, cost: 0, spaces: 0, diagonals: 0, diagonalWeight: 0 }
+      : perspectiveDistanceBetween(points[i - 1], points[i], config, rect, diagonalWeight);
+    diagonalWeight += measurement.diagonalWeight;
     totalDistance += measurement.distance;
     totalEuclidean += measurement.euclidean;
     totalCost += measurement.cost;

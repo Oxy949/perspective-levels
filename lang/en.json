@@ -9,6 +9,7 @@
   "PERSPECTIVE_LEVELS.FarAnchor": "Far Anchor",
   "PERSPECTIVE_LEVELS.NearAnchor": "Near Anchor",
   "PERSPECTIVE_LEVELS.Save": "Save to Level",
+  "PERSPECTIVE_LEVELS.SaveFailed": "Could not save the level calibration",
   "PERSPECTIVE_LEVELS.Reset": "Reset",
   "PERSPECTIVE_LEVELS.Close": "Close",
   "PERSPECTIVE_LEVELS.GridSection": "Grid",
@@ -36,6 +37,7 @@
   "PERSPECTIVE_LEVELS.CopyGridSettings": "Copy Grid Settings",
   "PERSPECTIVE_LEVELS.PasteGridSettings": "Paste Grid Settings",
   "PERSPECTIVE_LEVELS.GridSettingsCopied": "Grid settings copied to clipboard",
+  "PERSPECTIVE_LEVELS.GridSettingsCopyFailed": "Could not copy grid settings to the clipboard",
   "PERSPECTIVE_LEVELS.GridSettingsPasted": "Grid settings pasted",
   "PERSPECTIVE_LEVELS.InvalidGridSettings": "Invalid grid settings format"
 }

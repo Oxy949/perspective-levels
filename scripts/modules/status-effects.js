@@ -138,14 +138,6 @@ async function refreshTokenStatusIcons(token, { redraw = true } = {}) {
   if (!token || token.destroyed) return;
 
   try {
-    if (token.effects && !token.effects.destroyed) {
-      token.effects.visible = true;
-      token.effects.renderable = true;
-      token.effects.alpha = 1;
-    }
-  } catch (_err) { /* noop */ }
-
-  try {
     if (redraw && typeof token.drawEffects === "function") {
       await token.drawEffects();
     } else if (redraw) {
@@ -156,6 +148,8 @@ async function refreshTokenStatusIcons(token, { redraw = true } = {}) {
   } catch (err) {
     console.warn(`${MODULE_ID} | Failed to redraw token status effects`, err);
   }
+
+  if (token.destroyed || !globalThis.canvas?.ready) return;
 
   try {
     if (typeof token._refreshEffects === "function") token._refreshEffects();

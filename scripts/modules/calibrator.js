@@ -34,8 +34,9 @@ export class PerspectiveCalibrator {
     this.drawGrid = drawGrid;
     this._autoSaveTimer = null;
     this._pendingAutoSave = null;
-    this._autoSaveInFlight = false;
-    this._autoSaveAgain = false;
+    this._autoSavePromise = Promise.resolve();
+    this._wheelElement = null;
+    this._onNativeWheel = this._onNativeWheel.bind(this);
   }
 
   get active() {
@@ -72,6 +73,8 @@ export class PerspectiveCalibrator {
     this.container.on("pointerup", () => this._stopDrag());
     this.container.on("globalpointerup", () => this._stopDrag());
     this.container.on("pointerupoutside", () => this._stopDrag());
+    this._wheelElement = canvas.app?.canvas ?? canvas.app?.view ?? canvas.app?.renderer?.view;
+    this._wheelElement?.addEventListener("wheel", this._onNativeWheel, { capture: true, passive: false });
 
     this._createPanel();
     this.redraw();
@@ -80,6 +83,8 @@ export class PerspectiveCalibrator {
 
   close(refresh = true) {
     this._flushAutoSave();
+    this._wheelElement?.removeEventListener("wheel", this._onNativeWheel, { capture: true });
+    this._wheelElement = null;
     const level = this.level;
     if (this.container && !this.container.destroyed) this.container.destroy({ children: true });
     this.container = null;
@@ -99,11 +104,12 @@ export class PerspectiveCalibrator {
 
   async save({ notify = true } = {}) {
     if (!this.level || !this.config) return;
+    const level = this.level;
     this._clearAutoSaveTimer();
-    this._pendingAutoSave = null;
-    await setLevelConfig(this.level, this.config);
-    if (notify) ui.notifications?.info(i18nFormat("PERSPECTIVE_LEVELS.SavedToLevel", { level: this.level.name }));
-    this.refresh();
+    this._pendingAutoSave = { level, config: normalizeConfig(this.config) };
+    await this._flushAutoSave({ throwOnError: true });
+    if (notify) ui.notifications?.info(i18nFormat("PERSPECTIVE_LEVELS.SavedToLevel", { level: level.name }));
+    if (this.level === level) this.refresh();
   }
 
   reset() {
@@ -141,30 +147,19 @@ export class PerspectiveCalibrator {
     }, AUTO_SAVE_DEBOUNCE_MS);
   }
 
-  async _flushAutoSave() {
+  _flushAutoSave({ throwOnError = false } = {}) {
     this._clearAutoSaveTimer();
-
-    if (this._autoSaveInFlight) {
-      this._autoSaveAgain = true;
-      return;
-    }
-
     const pending = this._pendingAutoSave;
     this._pendingAutoSave = null;
-    if (!pending?.level || !pending.config) return;
+    if (!pending?.level || !pending.config) return this._autoSavePromise;
 
-    this._autoSaveInFlight = true;
-    try {
-      await setLevelConfig(pending.level, pending.config);
-    } catch (err) {
+    // Capture each level/config before waiting, including when a different
+    // level is opened while an earlier save is still in flight.
+    const save = this._autoSavePromise.then(() => setLevelConfig(pending.level, pending.config));
+    this._autoSavePromise = save.catch(err => {
       console.warn("perspective-levels | Failed to auto-save calibration", err);
-    } finally {
-      this._autoSaveInFlight = false;
-      if (this._pendingAutoSave || this._autoSaveAgain) {
-        this._autoSaveAgain = false;
-        this._flushAutoSave();
-      }
-    }
+    });
+    return throwOnError ? save : this._autoSavePromise;
   }
 
   _createAnchor(key, label, color) {
@@ -216,6 +211,32 @@ export class PerspectiveCalibrator {
     this.dragging = null;
   }
 
+  _onNativeWheel(event) {
+    const events = globalThis.canvas?.app?.renderer?.events;
+    if (!this.container || typeof events?.mapPositionToPoint !== "function") return;
+    const global = new PIXI.Point();
+    events.mapPositionToPoint(global, event.clientX, event.clientY);
+    this._onWheel(event, this.container.toLocal(global));
+  }
+
+  _onWheel(event, localPoint = null) {
+    const delta = Number(event.deltaY ?? event.nativeEvent?.deltaY) || 0;
+    if (!delta || !this.container || !this.config) return;
+    const point = localPoint ?? event.getLocalPosition(this.container);
+    const candidates = Object.entries(this.anchors).filter(([, anchor]) =>
+      anchor.hitArea?.contains(point.x - anchor.position.x, point.y - anchor.position.y));
+    candidates.sort(([, a], [, b]) =>
+      Math.hypot(point.x - a.position.x, point.y - a.position.y)
+      - Math.hypot(point.x - b.position.x, point.y - b.position.y));
+    const key = candidates[0]?.[0];
+    if (!key) return;
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    const precise = event.shiftKey ?? event.nativeEvent?.shiftKey;
+    this.config[key].rotation = normalizeRotation(this.config[key].rotation + Math.sign(delta) * (precise ? 1 : 5));
+    this._applyConfigChange({ autosave: true, syncPanel: true });
+  }
+
   _createPanel() {
     const existing = document.getElementById("perspective-levels-calibrator");
     if (existing) existing.remove();
@@ -225,14 +246,14 @@ export class PerspectiveCalibrator {
     div.innerHTML = `
       <header>${i18n("PERSPECTIVE_LEVELS.Calibrator")}</header>
       <p class="hint">${i18n("PERSPECTIVE_LEVELS.CalibratorHint")}</p>
-      <label>${i18n("PERSPECTIVE_LEVELS.FarAnchor")} ${i18n("PERSPECTIVE_LEVELS.Scale")} <input type="range" data-pl-scale="far" min="0.05" max="2.5" step="0.01"></label>
+      <label>${i18n("PERSPECTIVE_LEVELS.FarAnchor")} ${i18n("PERSPECTIVE_LEVELS.Scale")} <input type="range" data-pl-scale="far" min="0.05" max="4" step="0.01"></label>
       <label>${i18n("PERSPECTIVE_LEVELS.FarAnchor")} ${i18n("PERSPECTIVE_LEVELS.Rotation")} <input type="range" data-pl-rotation="far" min="-180" max="180" step="1"></label>
-      <label>${i18n("PERSPECTIVE_LEVELS.NearAnchor")} ${i18n("PERSPECTIVE_LEVELS.Scale")} <input type="range" data-pl-scale="near" min="0.05" max="3.5" step="0.01"></label>
+      <label>${i18n("PERSPECTIVE_LEVELS.NearAnchor")} ${i18n("PERSPECTIVE_LEVELS.Scale")} <input type="range" data-pl-scale="near" min="0.05" max="4" step="0.01"></label>
       <label>${i18n("PERSPECTIVE_LEVELS.NearAnchor")} ${i18n("PERSPECTIVE_LEVELS.Rotation")} <input type="range" data-pl-rotation="near" min="-180" max="180" step="1"></label>
       <label>${i18n("PERSPECTIVE_LEVELS.GridCurve")} <input type="range" data-pl-curve min="0.4" max="4" step="0.01"></label>
-      <label>${i18n("PERSPECTIVE_LEVELS.GridCellScale")} <input type="range" data-pl-grid-scale min="0.1" max="4" step="0.05"></label>
-      <label>${i18n("PERSPECTIVE_LEVELS.SceneDepthCells")} <input type="range" data-pl-scene-depth min="1" max="80" step="1"></label>
-      <label>${i18n("PERSPECTIVE_LEVELS.TokenSizeMultiplier")} <input type="range" data-pl-token-scale min="0.05" max="4" step="0.05"></label>
+      <label>${i18n("PERSPECTIVE_LEVELS.GridCellScale")} <input type="range" data-pl-grid-scale min="0.1" max="8" step="0.05"></label>
+      <label>${i18n("PERSPECTIVE_LEVELS.SceneDepthCells")} <input type="range" data-pl-scene-depth min="1" max="200" step="1"></label>
+      <label>${i18n("PERSPECTIVE_LEVELS.TokenSizeMultiplier")} <input type="range" data-pl-token-scale min="0.05" max="8" step="0.05"></label>
       <label>${i18n("PERSPECTIVE_LEVELS.TokenArtVerticalAlign")} <input type="range" data-pl-token-align min="0" max="1" step="0.01"></label>
       <footer>
         <button type="button" data-pl-action="save"><i class="fa-solid fa-floppy-disk"></i> ${i18n("PERSPECTIVE_LEVELS.Save")}</button>
@@ -277,7 +298,10 @@ export class PerspectiveCalibrator {
       this.config.tokenArtVerticalAlign = clamp(event.currentTarget.value, 0, 1);
       this._applyConfigChange({ autosave: true });
     });
-    div.querySelector("[data-pl-action='save']")?.addEventListener("click", () => this.save());
+    div.querySelector("[data-pl-action='save']")?.addEventListener("click", () => this.save().catch(err => {
+      console.warn("perspective-levels | Failed to save calibration", err);
+      ui.notifications?.error(i18n("PERSPECTIVE_LEVELS.SaveFailed"));
+    }));
     div.querySelector("[data-pl-action='reset']")?.addEventListener("click", () => this.reset());
     div.querySelector("[data-pl-action='close']")?.addEventListener("click", () => this.close());
 

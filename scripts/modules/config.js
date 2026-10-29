@@ -78,7 +78,7 @@ export function normalizeConfig(config = {}) {
   };
 
   if (Math.abs(merged.near.y - merged.far.y) < 0.02) {
-    merged.near.y = clamp(merged.far.y + 0.35, 0, 1);
+    merged.near.y = roundNumber(merged.far.y <= 0.65 ? merged.far.y + 0.35 : merged.far.y - 0.35);
   }
 
   return merged;

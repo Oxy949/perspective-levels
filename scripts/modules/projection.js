@@ -76,6 +76,7 @@ export function scaleForY(y, config = getLevelConfig(), rect = getSceneRect()) {
 export function getElevation(point) {
   const candidates = [point?.elevation, point?.z, point?.k];
   for (const value of candidates) {
+    if (value === null || value === undefined || value === "") continue;
     const n = Number(value);
     if (Number.isFinite(n)) return n;
   }
@@ -111,6 +112,11 @@ export function getPerspectiveGridModel(config = getLevelConfig(), rect = getSce
 
   const far = lineDataForAnchor(config.far, farLength, rect);
   const near = lineDataForAnchor(config.near, nearLength, rect);
+  const corners = [far.left, far.right, near.right, near.left];
+  const turns = corners.map((a, index) => {
+    const b = corners[(index + 1) % 4], c = corners[(index + 2) % 4];
+    return (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+  });
 
   return {
     rect,
@@ -120,6 +126,7 @@ export function getPerspectiveGridModel(config = getLevelConfig(), rect = getSce
     baseWidth,
     far,
     near,
+    convex: turns.every(turn => turn > 0.000001) || turns.every(turn => turn < -0.000001),
     // Legacy-compatible aliases used by a few debug scripts / external macros.
     topY: far.center.y,
     bottomY: near.center.y,
@@ -172,7 +179,7 @@ function solveBilinearCoordinates(model, point) {
   let t = clamp(((p.x - farCenter.x) * centerAxis.x + (p.y - farCenter.y) * centerAxis.y) / axisLenSq, 0, 1);
   let u = 0.5;
 
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 20; i++) {
     const left = lerpPoint(model.far.left, model.near.left, t);
     const right = lerpPoint(model.far.right, model.near.right, t);
     const width = subtractPoint(right, left);
@@ -184,7 +191,7 @@ function solveBilinearCoordinates(model, point) {
     const current = bilinearPoint(model, t, u);
     const fx = current.x - p.x;
     const fy = current.y - p.y;
-    if (Math.hypot(fx, fy) < 0.01) break;
+    if (Math.hypot(fx, fy) < 0.0000001) break;
 
     const dLeft = subtractPoint(model.near.left, model.far.left);
     const dRight = subtractPoint(model.near.right, model.far.right);
@@ -244,6 +251,15 @@ function betterGridProjection(a, b, epsilon = 0.0001) {
 
 function solveVisualGridCoordinates(model, point) {
   const p = getPointXY(point);
+  const seed = solveBilinearCoordinates(model, p);
+  const seedRow = Math.sign(seed.t) * Math.pow(Math.abs(seed.t), 1 / model.curve) * model.rows;
+  const seedProjection = Number.isFinite(seedRow) ? projectionOnGridRow(model, seedRow, p) : null;
+  // Convex grids have one inverse inside their borders. Avoid hundreds of row
+  // samples for every token/elevation refresh in this common case.
+  if (model.convex && seed.t > 0.000001 && seed.t < 0.999999 && seed.u >= 0 && seed.u <= 1
+    && seedProjection?.distanceSquared < 0.0000000001) {
+    return { i: seedProjection.u * model.columns, j: seedRow, elevation: p.elevation };
+  }
   const minRow = 0;
   const maxRow = model.rows;
 
@@ -282,6 +298,16 @@ function solveVisualGridCoordinates(model, point) {
 
   const refined = projectionOnGridRow(model, (lo + hi) / 2, p);
   best = betterGridProjection(best, refined, 0.01);
+
+  // The drawn anchors are not scene boundaries. Use the bilinear inverse to
+  // recover fractional rows and extensions outside them (keyboard movement and
+  // rulers must not get stuck at the first/last drawn row).
+  const row = seedRow;
+  if (Number.isFinite(row) && Math.abs(row) <= model.rows * 10) {
+    const candidate = seedProjection;
+    if (row >= 0 && row <= model.rows) best = betterGridProjection(best, candidate, 0.00000001);
+    else if (candidate.distanceSquared < best.distanceSquared - 0.0000000001) best = candidate;
+  }
 
   return {
     i: best.u * model.columns,
@@ -327,21 +353,27 @@ export function screenPointToElevationGroundPoint(point, config = getLevelConfig
 
   // Foundry v14 stores token elevation in real scene units. For perspective mode we
   // interpret the token's canvas Y as a projected/elevated visual point and recover
-  // the ground point under it. The local pixel-per-height-unit depends on the
-  // perspective row, so solve it iteratively instead of using a constant.
+  // the ground point under it. Solve y - offset(y) = screenY, rather than a
+  // fixed five substitutions which drift/oscillate on curved grids.
   let groundY = p.y;
-  for (let i = 0; i < 5; i++) {
-    const coords = screenPointToPerspectiveGridRaw({ x: p.x, y: groundY, elevation: 0 }, config, rect, model);
-    const offset = elevationToScreenOffsetAtRow(p.elevation, coords.j, config, rect, model);
-    const nextY = p.y + offset;
-    if (Math.abs(nextY - groundY) < 0.01) {
-      groundY = nextY;
-      break;
-    }
-    groundY = nextY;
+  let bestY = groundY;
+  let bestError = Infinity;
+  const offsetAt = y => {
+    const coords = screenPointToPerspectiveGridRaw({ x: p.x, y, elevation: 0 }, config, rect, model);
+    return elevationToScreenOffsetAtRow(p.elevation, coords.j, config, rect, model);
+  };
+  for (let i = 0; i < 20; i++) {
+    const offset = offsetAt(groundY);
+    const residual = groundY - offset - p.y;
+    const error = Math.abs(residual);
+    if (error < bestError) { bestError = error; bestY = groundY; }
+    if (error < 0.0001) break;
+    const derivative = 1 - (offsetAt(groundY + 0.25) - offset) / 0.25;
+    const step = Math.abs(derivative) > 0.0001 ? residual / derivative : residual * 0.5;
+    groundY -= clamp(step, -rect.height, rect.height);
   }
 
-  return { x: p.x, y: groundY, elevation: p.elevation };
+  return { x: p.x, y: bestY, elevation: p.elevation };
 }
 
 export function perspectiveGroundPointToElevatedScreen(point, config = getLevelConfig(), rect = getSceneRect(), model = null) {

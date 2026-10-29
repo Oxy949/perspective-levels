@@ -32,7 +32,8 @@ import {
   scheduleActorStatusIconRefreshBurst,
   scheduleTokenStatusIconRefreshBurst
 } from "./status-effects.js";
-import { clearPerspectiveUpdateState } from "./token-update-queue.js";
+import { clearPerspectiveUpdateState, schedulePerspectiveUpdate } from "./token-update-queue.js";
+import { isTokenArtMultiplierUpdate } from "./token-art.js";
 import {
   applyPerspectiveToToken,
   clearPerspectiveSortState,
@@ -55,7 +56,10 @@ export const calibrator = new PerspectiveCalibrator({
 
 let hooksRegistered = false;
 
-gridOverlay.onLevelChange = () => refreshAll();
+gridOverlay.onLevelChange = () => {
+  if (calibrator.active && calibrator.level !== globalThis.canvas?.level) calibrator.close(false);
+  refreshAll();
+};
 
 function refreshOverlays() {
   gridOverlay.forceVisible = calibrator.active;
@@ -142,6 +146,16 @@ export function registerHooks() {
     catch (err) { console.warn(`${MODULE_ID} | Failed to schedule status icon refresh after effect creation`, err); }
   });
 
+  hooks.on("updateActor", (actor, changes = {}) => {
+    if (!isTokenArtMultiplierUpdate(changes)) return;
+    forEachToken(token => {
+      const tokenActor = token.actor ?? token.document?.actor;
+      if (tokenActor === actor || (actor.id && (tokenActor?.id ?? token.document?.actorId) === actor.id)) {
+        schedulePerspectiveUpdate(token);
+      }
+    });
+  });
+
   hooks.on("updateActiveEffect", effect => {
     try { scheduleActorStatusIconRefreshBurst(getActorFromActiveEffect(effect), { redraw: true }); }
     catch (err) { console.warn(`${MODULE_ID} | Failed to schedule status icon refresh after effect update`, err); }
@@ -201,13 +215,14 @@ export function registerHooks() {
     clearTokenStatusIconRefreshState();
   });
 
-  hooks.on("drawObject", object => {
+  hooks.on("drawToken", object => {
     if (isTokenObject(object)) applyPerspectiveToToken(object);
   });
-  hooks.on("refreshObject", object => {
-    if (isTokenObject(object)) applyPerspectiveToToken(object);
+  hooks.on("refreshToken", object => {
+    // Sort flushing applies render flags, which emits refreshToken again.
+    if (isTokenObject(object)) applyPerspectiveToToken(object, { scheduleSort: false });
   });
-  hooks.on("destroyObject", object => {
+  hooks.on("destroyToken", object => {
     if (isTokenObject(object)) removePerspectiveFromToken(object);
   });
 
@@ -215,7 +230,7 @@ export function registerHooks() {
   hooks.on("recordToken", token => refreshTokenFromHook(token));
   hooks.on("stopToken", token => refreshTokenFromHook(token, { debounce: true }));
 
-  hooks.on("updateDocument", (document, changes = {}) => {
+  const onConfigDocumentUpdate = (document, changes = {}) => {
     const canvasRef = globalThis.canvas;
     if (!canvasRef?.ready) return;
     if (document?.documentName === "Level" && document.parent?.id === canvasRef.scene?.id) refreshAll();
@@ -235,7 +250,9 @@ export function registerHooks() {
       );
       if (gridChanged) refreshAll();
     }
-  });
+  };
+  hooks.on("updateLevel", onConfigDocumentUpdate);
+  hooks.on("updateScene", onConfigDocumentUpdate);
 }
 
 export function getPublicApi() {

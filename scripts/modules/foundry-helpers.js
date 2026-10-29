@@ -64,16 +64,7 @@ export function isShiftActive(event = null) {
 }
 
 export function getKeyboardIncrementScale() {
-  try {
-    const key = getKeyboardModifierConstants().SHIFT;
-    if (key && globalThis.game?.keyboard?.isModifierActive?.(key)) return 0.5;
-  } catch (_err) { /* noop */ }
-
-  try {
-    if (globalThis.keyboard?.isDown?.("Shift")) return 0.5;
-  } catch (_err) { /* noop */ }
-
-  return 1;
+  return isShiftActive() ? 0.5 : 1;
 }
 
 export function getTokenIdentity(token) {

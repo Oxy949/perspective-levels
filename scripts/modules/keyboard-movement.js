@@ -27,7 +27,7 @@ function perspectiveKeyboardMovePoint(bottom, dx, dy, config, rect) {
   );
 }
 
-function buildPerspectiveKeyboardMoveUpdate(object, dx, dy, config, rect) {
+function buildPerspectiveKeyboardMoveUpdate(object, dx, dy, config, rect, elevation) {
   const document = object?.document;
   if (!document?.id) return null;
 
@@ -37,7 +37,7 @@ function buildPerspectiveKeyboardMoveUpdate(object, dx, dy, config, rect) {
   const movedBottom = perspectiveGroundPointToElevatedScreen({
     x: movedGroundBottom.x,
     y: movedGroundBottom.y,
-    elevation: bottom.elevation
+    elevation: Number.isFinite(elevation) ? elevation : bottom.elevation
   }, config, rect);
 
   const minX = rect.x;
@@ -55,62 +55,42 @@ function buildPerspectiveKeyboardMoveUpdate(object, dx, dy, config, rect) {
 export function installPerspectiveTokenLayerMovementPatch() {
   const TokenLayerClass = globalThis.foundry?.canvas?.layers?.TokenLayer ?? globalThis.TokenLayer;
   const proto = TokenLayerClass?.prototype;
-  if (!proto || proto._perspectiveLevelsMoveManyPatch || typeof proto.moveMany !== "function") return false;
+  if (!proto || proto._perspectiveLevelsMoveManyPatch || typeof proto._prepareKeyboardMovementUpdates !== "function") return false;
   proto._perspectiveLevelsMoveManyPatch = true;
 
-  wrapPrototypeMethod(proto, "moveMany", async function(original, args) {
-    const [options = {}] = args;
-    const dx = Number(options?.dx ?? 0) || 0;
-    const dy = Number(options?.dy ?? 0) || 0;
-
+  // Keep the native moveMany workflow: pause checks, argument validation,
+  // includeLocked, vertical movement and update errors belong to Foundry.
+  wrapPrototypeMethod(proto, "_prepareKeyboardMovementUpdates", function(original, args) {
+    const result = original.apply(this, args);
+    const [objects, dx, dy] = args;
     try {
       const config = getLevelConfig();
-      if (!globalThis.canvas?.ready || !isPerspectiveEnabled(config) || (dx === 0 && dy === 0) || options?.rotate) {
-        return original.apply(this, args);
-      }
-
-      const objects = typeof this._getMovableObjects === "function"
-        ? this._getMovableObjects(options?.ids, options?.includeLocked)
-        : (Array.isArray(options?.ids) && options.ids.length
-          ? (this.placeables ?? []).filter(object => options.ids.includes(object?.id ?? object?.document?.id))
-          : (this.controlled ?? []));
-
-      if (!objects?.length) return [];
-      this.hud?.clear?.();
+      if (!globalThis.canvas?.ready || !isPerspectiveEnabled(config) || (!dx && !dy)) return result;
 
       const rect = getSceneRect();
       const incrementScale = getKeyboardIncrementScale();
-      const updates = [];
-
-      for (const object of objects) {
-        if (!object || object.destroyed || object.document?.locked) continue;
-        if (typeof object._canDrag === "function" && !object._canDrag(globalThis.game?.user, null)) continue;
-        const update = buildPerspectiveKeyboardMoveUpdate(object, dx * incrementScale, dy * incrementScale, config, rect);
-        if (update) updates.push(update);
-      }
-
-      if (!updates.length) return [];
-
-      const scene = globalThis.canvas?.scene;
-      if (scene?.updateEmbeddedDocuments) {
-        await scene.updateEmbeddedDocuments("Token", updates, {
-          animate: true,
-          _perspectiveLevelsKeyboardMove: true
-        });
-      } else {
-        await Promise.all(updates.map(update => {
-          const object = objects.find(candidate => candidate?.document?.id === update._id);
-          return object?.document?.update?.(update, { animate: true, _perspectiveLevelsKeyboardMove: true });
-        }));
-      }
-
-      for (const object of objects) schedulePerspectiveTokenUpdateBurst(object);
-      schedulePerspectiveSort({ tokens: objects, debounce: true });
-      return objects;
+      const byId = new Map(objects.map(object => [object.document.id, object]));
+      const [updates, options = {}] = result;
+      return [updates.map(update => {
+        const object = byId.get(update._id);
+        if (!object || object.destroyed) return update;
+        const position = buildPerspectiveKeyboardMoveUpdate(object, dx * incrementScale, dy * incrementScale,
+          config, rect, update.elevation);
+        return position ? { ...update, ...position } : update;
+      }), { ...options, animate: true, _perspectiveLevelsKeyboardMove: true }];
     } catch (err) {
       console.warn(`${MODULE_ID} | Failed to apply perspective keyboard movement`, err);
-      return original.apply(this, args);
+      return result;
     }
+  });
+
+  wrapPrototypeMethod(proto, "moveMany", async function(original, args) {
+    const objects = await original.apply(this, args);
+    if (globalThis.canvas?.ready && isPerspectiveEnabled() && !args[0]?.rotate && objects?.length) {
+      for (const object of objects) schedulePerspectiveTokenUpdateBurst(object);
+      schedulePerspectiveSort({ tokens: objects, debounce: true });
+    }
+    return objects;
   });
 
   console.log(`${MODULE_ID} | Perspective keyboard movement patch installed`);

@@ -3,7 +3,8 @@ import { beforeEach, test } from "node:test";
 import { installTokenPerspectiveLifecyclePatches } from "../scripts/modules/token-lifecycle-patches.js";
 import { installTokenPerspectiveShapePatch } from "../scripts/modules/token-hit-testing.js";
 import { clearPerspectiveUpdateState } from "../scripts/modules/token-update-queue.js";
-import { applyPerspectiveToToken, clearPerspectiveSortState, clearTokenScaleState, getTokenGroundPoint, removePerspectiveFromToken } from "../scripts/modules/tokens.js";
+import { applyPerspectiveToToken, clearPerspectiveSortState, clearTokenScaleState, getTokenGroundPoint, removePerspectiveFromToken, schedulePerspectiveSort } from "../scripts/modules/tokens.js";
+import { registerHooks, gridOverlay, calibrator } from "../scripts/modules/runtime.js";
 
 class Point {
   constructor(x = 0, y = 0) { this.set(x, y); }
@@ -126,12 +127,16 @@ class Token {
     this.layer._draggedToken = null;
   }
   _onDragEnd() {}
+  _onDragStart() {}
 }
 
 globalThis.PIXI = { Graphics, Rectangle };
 globalThis.foundry = { canvas: { primary: { PrimaryGraphics }, placeables: { Token } } };
 installTokenPerspectiveLifecyclePatches();
 installTokenPerspectiveShapePatch();
+const hooks = new Map();
+globalThis.Hooks = { on: (name, callback) => hooks.set(name, callback), once() {} };
+registerHooks();
 
 beforeEach(() => {
   clearPerspectiveUpdateState();
@@ -371,4 +376,200 @@ test("hit bounds follow a mesh position refresh even when token position was ref
   token.mesh.position.x += 100;
   applyPerspectiveToToken(token, { scheduleSort: false });
   closeTo(token.hitArea.x, initialX);
+});
+
+test("portrait art multiplier is optional, uniform, live and never changes ground footprint", () => {
+  const token = new Token("a");
+  token.actor = { flags: { 'ginzzzu-portraits': { portraitHeightMultiplier: 1.8 } } };
+  game.modules = new Map();
+  applyPerspectiveToToken(token, { scheduleSort: false });
+  const base = token.mesh.scale.x;
+  const radius = shadowOf(token).ellipses[0].rx;
+  game.modules.set('ginzzzu-portraits', { active: false });
+  applyPerspectiveToToken(token, { scheduleSort: false }); closeTo(token.mesh.scale.x, base);
+  game.modules.get('ginzzzu-portraits').active = true;
+  for (let i = 0; i < 3; i++) {
+    applyPerspectiveToToken(token, { scheduleSort: false });
+    closeTo(token.mesh.scale.x, base * 1.8); closeTo(token.mesh.scale.y, base * 1.8);
+    closeTo(artBounds(token).bottom, token.h); closeTo(shadowOf(token).ellipses[0].rx, radius);
+  }
+  for (const invalid of [undefined, null, '', '  ', false, -1, NaN, Infinity, 'bad']) {
+    token.actor.flags['ginzzzu-portraits'].portraitHeightMultiplier = invalid;
+    applyPerspectiveToToken(token, { scheduleSort: false }); closeTo(token.mesh.scale.x, base);
+  }
+  token.actor.flags['ginzzzu-portraits'].portraitHeightMultiplier = 0;
+  applyPerspectiveToToken(token, { scheduleSort: false }); assert.equal(token.mesh.scale.x, 0);
+  token.actor.flags['ginzzzu-portraits'].portraitHeightMultiplier = 2;
+  applyPerspectiveToToken(token, { scheduleSort: false }); closeTo(token.mesh.scale.x, base * 2);
+  config.enabled = false; applyPerspectiveToToken(token, { scheduleSort: false }); closeTo(token.mesh.scale.x, 1);
+});
+
+test("actor flag updates refresh both the original and its active drag preview", () => {
+  game.modules = new Map([['ginzzzu-portraits', { active: true }]]);
+  const actor = { id: 'actor', getFlag: () => 1.5 };
+  const original = new Token('a'), clone = new Token('a');
+  original.actor = clone.actor = actor; clone._original = original;
+  canvas.tokens.placeables = [original]; canvas.tokens.preview.addChild(clone);
+  hooks.get('updateActor')(actor, { flags: { 'ginzzzu-portraits': { portraitHeightMultiplier: 1.5 } } });
+  framesUntilIdle();
+  closeTo(original.mesh.scale.x, 0.9); closeTo(clone.mesh.scale.x, 0.9);
+});
+
+function framesUntilIdle() {
+  let count = 0;
+  while (frameCallbacks.length && count++ < 10) frameCallbacks.shift()();
+  assert.equal(frameCallbacks.length, 0);
+}
+
+test("texture dimensions and fit changes do not leave a stale base scale", () => {
+  const token = new Token('a');
+  applyPerspectiveToToken(token, { scheduleSort: false });
+  token.mesh.texture.orig = { width: 200, height: 100 };
+  applyPerspectiveToToken(token, { scheduleSort: false }); closeTo(token.mesh.scale.x, 0.3);
+  token.document.texture.fit = 'cover';
+  applyPerspectiveToToken(token, { scheduleSort: false }); closeTo(token.mesh.scale.x, 0.6);
+  config.tokenScaling = false;
+  token.document.texture.scaleY = 1.5;
+  applyPerspectiveToToken(token, { scheduleSort: false }); closeTo(token.mesh.scale.y, 1.5);
+  token.document.texture.fit = 'fill'; token.document.texture.scaleY = 2;
+  config.enabled = false;
+  applyPerspectiveToToken(token, { scheduleSort: false }); closeTo(token.mesh.scale.x, 0.5); closeTo(token.mesh.scale.y, 2);
+});
+
+test("a disappearing mesh removes its shadow even with scaling disabled", () => {
+  config.tokenScaling = false;
+  const token = new Token('a'); applyPerspectiveToToken(token, { scheduleSort: false });
+  const shadow = shadowOf(token); token.mesh.destroyed = true;
+  applyPerspectiveToToken(token, { scheduleSort: false }); assert.equal(shadow.destroyed, true);
+});
+
+test("depth sorting repairs external sort changes without waiting for depth to change", () => {
+  const far = new Token('a', { y: 400 }), near = new Token('b', { y: 900 });
+  canvas.tokens.placeables = [far, near];
+  schedulePerspectiveSort({ force: true }); framesUntilIdle();
+  assert.ok(far.document.sort < near.document.sort);
+  far.document.sort = 900000; near.document.sort = 0;
+  schedulePerspectiveSort({ tokens: [far, near] }); framesUntilIdle();
+  assert.ok(far.document.sort < near.document.sort);
+});
+
+test("scene teardown removes token shadows and restores art without stale updates", () => {
+  const token = new Token('a'); canvas.tokens.placeables = [token];
+  applyPerspectiveToToken(token, { scheduleSort: false }); const shadow = shadowOf(token);
+  hooks.get('canvasTearDown')();
+  assert.equal(shadow.destroyed, true); assert.equal(token.mesh._perspectiveLevelsAppliedScale, undefined);
+  closeTo(token.mesh.scale.x, 1);
+});
+
+test("switching levels closes calibration of the previous level", t => {
+  t.mock.method(gridOverlay, 'draw', () => {});
+  calibrator.container = { destroy() { this.destroyed = true; } };
+  calibrator.level = { id: 'previous' };
+  gridOverlay.onLevelChange();
+  assert.equal(calibrator.active, false); assert.equal(calibrator.level, null); assert.equal(gridOverlay.forceVisible, false);
+});
+
+test("a wheel elevation change is retained on the next Shift drag movement", () => {
+  const token = new Token('a'); const event = startDrag([token]);
+  token._onDragLeftMove(event);
+  const context = event.interactionData.contexts[0];
+  context.destination = token._getDragWaypointPosition(context.destination, { elevation: 15 });
+  token._onDragLeftMove(event);
+  assert.equal(context.destination.elevation, 15);
+});
+
+test("Foundry draw/refresh/destroy hooks initialize and clean up clone shadows without render loops", () => {
+  const original = new Token('a'), clone = new Token('a'); clone._original = original;
+  hooks.get('drawToken')(original); hooks.get('drawToken')(clone); framesUntilIdle();
+  const originalShadow = shadowOf(original), cloneShadow = shadowOf(clone);
+  assert.ok(originalShadow && cloneShadow);
+  hooks.get('refreshToken')(original); assert.equal(frameCallbacks.length, 0);
+  hooks.get('destroyToken')(clone); assert.equal(cloneShadow.destroyed, true);
+  assert.equal(originalShadow.destroyed, undefined);
+});
+
+test("native Level and Scene update hooks refresh affected scenes only", t => {
+  let draws = 0; t.mock.method(gridOverlay, 'draw', () => { draws++; });
+  canvas.scene.id = 'scene';
+  hooks.get('updateLevel')({ documentName: 'Level', parent: { id: 'scene' } }, { flags: {} });
+  hooks.get('updateScene')({ documentName: 'Scene', id: 'scene' }, { 'grid.distance': 10 });
+  assert.equal(draws, 2);
+  hooks.get('updateLevel')({ documentName: 'Level', parent: { id: 'other' } }, {});
+  hooks.get('updateScene')({ documentName: 'Scene', id: 'scene' }, { name: 'other' });
+  assert.equal(draws, 2);
+});
+
+test("the first canvasReady refresh updates hit bounds after an early draw", () => {
+  const token = new Token('a'); canvas.ready = false;
+  hooks.get('drawToken')(token);
+  canvas.ready = true;
+  applyPerspectiveToToken(token, { scheduleSort: false });
+  closeTo(token.hitArea.width, 60);
+});
+
+function visibleShadows() {
+  return canvas.primary.children.filter(child => child._perspectiveLevelsToken && child.visible && !child.destroyed);
+}
+
+function assertSingleShadow(token) {
+  const visible = visibleShadows();
+  assert.equal(visible.length, 1);
+  assert.ok(visible[0] === shadowOf(token));
+}
+
+test("takeoff shows only the active preview shadow even while its original remains visible", () => {
+  const original = new Token('a');
+  original.mesh.alpha = 0.5;
+  applyPerspectiveToToken(original, { scheduleSort: false });
+  const clone = new Token('a', { y: 600, elevation: 10 }); clone._original = original;
+  applyPerspectiveToToken(clone, { scheduleSort: false });
+  hooks.get('refreshToken')(original);
+  assert.equal(visibleShadows().length, 1);
+  assert.equal(visibleShadows()[0], shadowOf(clone));
+});
+
+test("a group has one visible shadow per token and restores originals on drop or cancel", () => {
+  const originals = [new Token('a'), new Token('b', { x: 500 })];
+  const clones = originals.map(original => {
+    applyPerspectiveToToken(original, { scheduleSort: false });
+    const clone = new Token(original.document.id, { elevation: 10, y: 650 }); clone._original = original;
+    applyPerspectiveToToken(clone, { scheduleSort: false }); return clone;
+  });
+  assert.equal(visibleShadows().length, 2);
+  for (const clone of clones) {
+    const shadow = shadowOf(clone);
+    clone._onDragEnd();
+    // Late refreshes can arrive before native destruction. They must not
+    // resurrect the completed preview's shadow.
+    hooks.get('refreshToken')(clone);
+    assert.equal(shadow.destroyed, true);
+    assert.equal(shadowOf(clone), undefined);
+    assert.equal(shadowOf(clone._original).visible, true);
+    hooks.get('destroyToken')(clone);
+  }
+  framesUntilIdle();
+  assert.equal(visibleShadows().length, 2);
+  for (const original of originals) assert.equal(shadowOf(original).visible, true);
+});
+
+test("an undrawn or invisible preview keeps the original shadow until the clone becomes visible", () => {
+  const original = new Token('a'); applyPerspectiveToToken(original, { scheduleSort: false });
+  const clone = new Token('a', { elevation: 10 }); clone._original = original; clone.visible = false;
+  applyPerspectiveToToken(clone, { scheduleSort: false });
+  assertSingleShadow(original);
+  clone.visible = true; hooks.get('refreshToken')(clone);
+  assertSingleShadow(clone);
+});
+
+test("ending the newest of multiple previews restores the remaining preview before the original", () => {
+  const original = new Token('a'); applyPerspectiveToToken(original, { scheduleSort: false });
+  const first = new Token('a', { elevation: 5 }); first._original = original;
+  const second = new Token('a', { elevation: 10 }); second._original = original;
+  applyPerspectiveToToken(first, { scheduleSort: false });
+  applyPerspectiveToToken(second, { scheduleSort: false });
+  assertSingleShadow(second);
+  second._onDragEnd(); assertSingleShadow(first);
+  first._onDragEnd(); assertSingleShadow(original);
+  first._onDragStart(); applyPerspectiveToToken(first, { scheduleSort: false });
+  assertSingleShadow(first);
 });
