@@ -6,7 +6,7 @@ import { positionTokenPerspectiveFrameInfo, resetTokenPerspectiveFrameInfo } fro
 import { clamp } from "./utils.js";
 import { getTokenArtMultiplier } from "./token-art.js";
 import { buildTokenPreviewIndex, getIndexedTokenPreviews } from "./token-previews.js";
-import { clearTokenOutline, updateTokenOutline, withTokenVisualsSuspended } from "./token-visuals.js";
+import { clearTokenOutline, updateTokenOutline, withTokenVisualsSuspended, refreshTokenRulerAlignment } from "./token-visuals.js";
 
 const ORIGINAL_TOKEN_STATE = new WeakMap();
 const TOKEN_BASE_SCALE_BY_DOCUMENT = new Map();
@@ -557,6 +557,7 @@ function refreshTokenPerspectiveFrame(token, config = getLevelConfig(), { force 
   }
   if (config?.enabled && config?.tokenScaling) positionTokenPerspectiveFrameInfo(token);
   else resetTokenPerspectiveFrameInfo(token);
+  try { refreshTokenRulerAlignment(token, config); } catch (_err) { /* noop */ }
 }
 
 export function removePerspectiveFromToken(token) {

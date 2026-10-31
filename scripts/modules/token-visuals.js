@@ -2,15 +2,22 @@ import { getRuntimeLevelConfig } from "./config.js";
 import { getTokenClass } from "./foundry-helpers.js";
 import { getTokenArtBounds } from "./token-hit-testing.js";
 import { createTokenOutlineFilter } from "./token-outline.js";
+import { clamp } from "./utils.js";
 
 const OUTLINES = new WeakMap();
 const NATIVE_POSITION_REFRESH = new WeakSet();
 const SUSPENDED_VISUALS = new WeakSet();
+const RULER_ALIGNMENTS = new WeakMap();
 
 export function withTokenVisualsSuspended(token, callback) {
   SUSPENDED_VISUALS.add(token);
   try { return callback(); }
   finally { clearTokenOutline(token); SUSPENDED_VISUALS.delete(token); }
+}
+
+function canUseTokenVisuals(token, config) {
+  return globalThis.canvas?.ready && config.enabled && token && !token.destroyed && !SUSPENDED_VISUALS.has(token)
+    && (!token.document?.parent || token.document.parent === globalThis.canvas.scene);
 }
 
 export function getTokenVisualCenter(token) {
@@ -23,6 +30,50 @@ export function getTokenVisualCenter(token) {
   if (!angle) return center;
   const pivot = token.mesh.position, dx = center.x - pivot.x, dy = center.y - pivot.y;
   return { x: pivot.x + dx * Math.cos(angle) - dy * Math.sin(angle), y: pivot.y + dx * Math.sin(angle) + dy * Math.cos(angle) };
+}
+
+function prepareTokenRulerPath(ruler, path) {
+  const token = ruler.token, config = getRuntimeLevelConfig();
+  if (!canUseTokenVisuals(token, config) || !config.tokenScaling) return;
+  const document = token.document;
+  const align = clamp(config.tokenArtVerticalAlign ?? 0.5, 0, 1);
+  const angle = Number(token.mesh?.rotation) || 0, sin = Math.sin(angle), cos = Math.cos(angle);
+  for (const waypoint of path) {
+    const level = waypoint.level ?? document.level;
+    if (level && globalThis.canvas.level?.id && level !== globalThis.canvas.level.id) continue;
+    const size = waypoint.size ?? document.getSize(waypoint);
+    const center = document.getCenterPoint(waypoint);
+    // Art alignment places this fraction of its height at the same fraction of
+    // the logical token height. The art height cancels, so this stays exact for
+    // every perspective/emotion scale, mirrored texture and historical size.
+    const y = (waypoint.y ?? document.y) + size.height * (1 - align);
+    const dy = y - center.y;
+    waypoint.center = { ...center, x: center.x - dy * sin, y: center.y + dy * cos };
+  }
+  // The native ruler measures positions before _preparePath; only its display
+  // centers and rays change. Keep movement cost, collisions and snapping native.
+  const Ray = globalThis.foundry?.canvas?.geometry?.Ray ?? globalThis.Ray;
+  if (Ray) for (const waypoint of path) {
+    waypoint.ray = waypoint.previous ? new Ray(waypoint.previous.center, waypoint.center) : null;
+  }
+}
+
+function adaptTokenRuler(ruler) {
+  wrap(ruler, "_preparePath", function(original, args) {
+    const result = original.apply(this, args);
+    prepareTokenRulerPath(this, args[0]);
+    return result;
+  });
+}
+
+export function refreshTokenRulerAlignment(token, config) {
+  if (!token.ruler || typeof token._refreshRuler !== "function") return;
+  const align = canUseTokenVisuals(token, config) && config.tokenScaling ? config.tokenArtVerticalAlign : null;
+  const rotation = align === null ? 0 : Number(token.mesh?.rotation) || 0;
+  const previous = RULER_ALIGNMENTS.get(token);
+  if (previous?.ruler === token.ruler && previous.align === align && previous.rotation === rotation) return;
+  RULER_ALIGNMENTS.set(token, { ruler: token.ruler, align, rotation });
+  token._refreshRuler();
 }
 
 export function clearTokenOutline(token) {
@@ -79,6 +130,21 @@ export function installTokenVisualPatches() {
   const proto = getTokenClass()?.prototype;
   if (!proto || Object.hasOwn(proto, "_perspectiveLevelsVisualPatch")) return;
   proto._perspectiveLevelsVisualPatch = true;
+  wrap(proto, "_initializeRuler", function(original, args) {
+    const ruler = original.apply(this, args);
+    adaptTokenRuler(ruler);
+    return ruler;
+  });
+  // Also cover rulers created by a system or already present when patches load.
+  wrap(proto, "_refreshRuler", function(original, args) {
+    adaptTokenRuler(this.ruler);
+    return original.apply(this, args);
+  });
+  wrap(proto, "_refreshRotation", function(original, args) {
+    const result = original.apply(this, args);
+    refreshTokenRulerAlignment(this, getRuntimeLevelConfig());
+    return result;
+  });
   let owner = proto;
   while (owner && !Object.getOwnPropertyDescriptor(owner, "center")) owner = Object.getPrototypeOf(owner);
   const descriptor = owner && Object.getOwnPropertyDescriptor(owner, "center");
