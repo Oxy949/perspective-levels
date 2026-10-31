@@ -1,55 +1,27 @@
 import { MODULE_ID } from "./constants.js";
 import { applyPerspectiveToToken } from "./tokens.js";
+import { getRuntimeLevelConfig } from "./config.js";
+import { collectTokensForActor } from "./actor-tokens.js";
 
 const PENDING_STATUS_ICON_REFRESHES = new Map();
-const PENDING_STATUS_ICON_REFRESH_TIMERS = new Set();
+const PENDING_STATUS_ICON_REFRESH_TIMERS = new Map();
+const IN_FLIGHT_STATUS_ICON_REFRESHES = new Map();
 const STATUS_ICON_REFRESH_BURST_DELAYS_MS = [0, 60, 180, 360];
 let PENDING_STATUS_ICON_REFRESH_TIMEOUT = null;
 let PENDING_STATUS_ICON_REFRESH_RAF = null;
 let ACTOR_STATUS_EFFECT_REFRESH_PATCHED = false;
+let statusRefreshGeneration = 0;
 
 function refreshRenderFlags(object, flags = {}) {
   try { object?.renderFlags?.set?.(flags); } catch (_err) { /* noop */ }
   try { object?.applyRenderFlags?.(); } catch (_err) { /* noop */ }
 }
 
-function tokenMatchesActor(token, actor) {
-  if (!token || token.destroyed || !actor) return false;
-  const tokenActor = token.actor ?? token.document?.actor;
-  if (tokenActor === actor) return true;
-
-  const actorUuid = actor.uuid ?? actor.document?.uuid;
-  const tokenActorUuid = tokenActor?.uuid ?? tokenActor?.document?.uuid;
-  if (actorUuid && tokenActorUuid && String(actorUuid) === String(tokenActorUuid)) return true;
-
-  const actorId = actor.id ?? actor._id;
-  const tokenActorId = tokenActor?.id ?? tokenActor?._id;
-  if (actorId && tokenActorId && String(actorId) === String(tokenActorId)) return true;
-
-  return false;
-}
-
-function collectTokensForActor(actor) {
-  const tokens = new Set();
-  if (!actor) return tokens;
-
-  try {
-    const actorTokens = actor.getActiveTokens?.();
-    if (Array.isArray(actorTokens)) {
-      for (const token of actorTokens) if (token && !token.destroyed) tokens.add(token);
-    }
-  } catch (_err) { /* Some synthetic actors can throw while scenes are changing. */ }
-
-  try {
-    const token = actor.token?.object ?? actor.prototypeToken?.object;
-    if (token && !token.destroyed) tokens.add(token);
-  } catch (_err) { /* noop */ }
-
-  for (const token of globalThis.canvas?.tokens?.placeables ?? []) {
-    if (tokenMatchesActor(token, actor)) tokens.add(token);
-  }
-
-  return tokens;
+function canRefresh(token, scene = globalThis.canvas?.scene) {
+  return Boolean(token && !token.destroyed && globalThis.canvas?.ready
+    && scene === globalThis.canvas.scene
+    && (!token.document?.parent || token.document.parent === scene)
+    && getRuntimeLevelConfig().enabled);
 }
 
 export function getActorFromActiveEffect(effect) {
@@ -68,7 +40,7 @@ function getActorClass() {
 }
 
 export function scheduleTokenStatusIconRefresh(token, { redraw = true } = {}) {
-  if (!token || token.destroyed) return;
+  if (!canRefresh(token)) return;
   const current = PENDING_STATUS_ICON_REFRESHES.get(token) ?? { redraw: false };
   current.redraw ||= redraw;
   PENDING_STATUS_ICON_REFRESHES.set(token, current);
@@ -83,27 +55,34 @@ export function scheduleTokenStatusIconRefresh(token, { redraw = true } = {}) {
 }
 
 export function scheduleActorStatusIconRefresh(actor, options = {}) {
+  if (!globalThis.canvas?.ready || !getRuntimeLevelConfig().enabled) return;
   for (const token of collectTokensForActor(actor)) scheduleTokenStatusIconRefresh(token, options);
 }
 
 export function scheduleTokenStatusIconRefreshBurst(token, options = {}) {
-  if (!token || token.destroyed) return;
+  if (!canRefresh(token)) return;
+  const previous = PENDING_STATUS_ICON_REFRESH_TIMERS.get(token);
+  for (const timer of previous?.timers ?? []) globalThis.clearTimeout(timer);
+  const burst = { timers: new Set(), options: { ...options, redraw: previous?.options.redraw || options.redraw !== false } };
+  PENDING_STATUS_ICON_REFRESH_TIMERS.set(token, burst);
 
   for (const delay of STATUS_ICON_REFRESH_BURST_DELAYS_MS) {
     if (delay <= 0) {
-      scheduleTokenStatusIconRefresh(token, options);
+      scheduleTokenStatusIconRefresh(token, burst.options);
       continue;
     }
 
     const timer = globalThis.setTimeout(() => {
-      PENDING_STATUS_ICON_REFRESH_TIMERS.delete(timer);
-      scheduleTokenStatusIconRefresh(token, options);
+      burst.timers.delete(timer);
+      if (!burst.timers.size) PENDING_STATUS_ICON_REFRESH_TIMERS.delete(token);
+      scheduleTokenStatusIconRefresh(token, burst.options);
     }, delay);
-    PENDING_STATUS_ICON_REFRESH_TIMERS.add(timer);
+    burst.timers.add(timer);
   }
 }
 
 export function scheduleActorStatusIconRefreshBurst(actor, options = {}) {
+  if (!globalThis.canvas?.ready || !getRuntimeLevelConfig().enabled) return;
   for (const token of collectTokensForActor(actor)) scheduleTokenStatusIconRefreshBurst(token, options);
 }
 
@@ -135,32 +114,48 @@ export function installActorStatusEffectRefreshPatch() {
 }
 
 async function refreshTokenStatusIcons(token, { redraw = true } = {}) {
-  if (!token || token.destroyed) return;
+  if (!canRefresh(token)) return;
+  const existing = IN_FLIGHT_STATUS_ICON_REFRESHES.get(token);
+  if (existing) {
+    existing.pending ??= { redraw: false };
+    existing.pending.redraw ||= redraw;
+    return;
+  }
+  const state = { generation: statusRefreshGeneration, scene: globalThis.canvas.scene };
+  IN_FLIGHT_STATUS_ICON_REFRESHES.set(token, state);
+  const current = () => state.generation === statusRefreshGeneration && canRefresh(token, state.scene);
 
   try {
-    if (redraw && typeof token.drawEffects === "function") {
-      await token.drawEffects();
-    } else if (redraw) {
-      refreshRenderFlags(token, { redrawEffects: true });
-    } else {
-      refreshRenderFlags(token, { refreshEffects: true });
+    try {
+      if (redraw && typeof token.drawEffects === "function") {
+        await token.drawEffects();
+      } else if (redraw) {
+        refreshRenderFlags(token, { redrawEffects: true });
+      } else {
+        refreshRenderFlags(token, { refreshEffects: true });
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Failed to redraw token status effects`, err);
     }
-  } catch (err) {
-    console.warn(`${MODULE_ID} | Failed to redraw token status effects`, err);
+
+    if (!current()) return;
+
+    try {
+      if (typeof token._refreshEffects === "function") token._refreshEffects();
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Failed to refresh token status effect positions`, err);
+    }
+
+    refreshRenderFlags(token, { refreshEffects: true, refreshState: true });
+
+    try { applyPerspectiveToToken(token); }
+    catch (err) { console.warn(`${MODULE_ID} | Failed to reapply perspective after status effects refresh`, err); }
+  } finally {
+    if (IN_FLIGHT_STATUS_ICON_REFRESHES.get(token) === state) {
+      IN_FLIGHT_STATUS_ICON_REFRESHES.delete(token);
+      if (state.pending && current()) scheduleTokenStatusIconRefresh(token, state.pending);
+    }
   }
-
-  if (token.destroyed || !globalThis.canvas?.ready) return;
-
-  try {
-    if (typeof token._refreshEffects === "function") token._refreshEffects();
-  } catch (err) {
-    console.warn(`${MODULE_ID} | Failed to refresh token status effect positions`, err);
-  }
-
-  refreshRenderFlags(token, { refreshEffects: true, refreshState: true });
-
-  try { applyPerspectiveToToken(token); }
-  catch (err) { console.warn(`${MODULE_ID} | Failed to reapply perspective after status effects refresh`, err); }
 }
 
 function flushTokenStatusIconRefreshes() {
@@ -177,9 +172,13 @@ function flushTokenStatusIconRefreshes() {
 }
 
 export function clearTokenStatusIconRefreshState() {
+  statusRefreshGeneration++;
+  IN_FLIGHT_STATUS_ICON_REFRESHES.clear();
   PENDING_STATUS_ICON_REFRESHES.clear();
-  for (const timer of PENDING_STATUS_ICON_REFRESH_TIMERS) {
-    try { globalThis.clearTimeout(timer); } catch (_err) { /* noop */ }
+  for (const burst of PENDING_STATUS_ICON_REFRESH_TIMERS.values()) {
+    for (const timer of burst.timers) {
+      try { globalThis.clearTimeout(timer); } catch (_err) { /* noop */ }
+    }
   }
   PENDING_STATUS_ICON_REFRESH_TIMERS.clear();
   if (PENDING_STATUS_ICON_REFRESH_TIMEOUT) {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
-import { normalizeConfig, getLevelConfig, setLevelConfigOverride, clearLevelConfigOverride } from "../scripts/modules/config.js";
+import { normalizeConfig, getLevelConfig, getRuntimeLevelConfig, setLevelConfigOverride, clearLevelConfigOverride } from "../scripts/modules/config.js";
 import { anchorToPoint, pointToAnchor, getElevation, getPerspectiveGridModel, perspectiveGridModelToScreen, screenPointToPerspectiveGrid, perspectiveGroundPointToElevatedScreen, screenPointToElevationGroundPoint } from "../scripts/modules/projection.js";
 import { squareGridDistanceSpaces, squareGridDistanceSpaces3D, perspectiveDistanceBetween, buildPerspectiveMeasurement, mergePerspectiveMeasurement } from "../scripts/modules/measurement.js";
 import { installPerspectiveMeasurementPatch } from "../scripts/modules/measurement-patches.js";
@@ -10,7 +10,9 @@ import { clearPerspectiveSortState } from "../scripts/modules/tokens.js";
 import { PerspectiveCalibrator } from "../scripts/modules/calibrator.js";
 import { PerspectiveGridOverlay } from "../scripts/modules/grid-overlay.js";
 import { applyGridSettings, extractGridSettings } from "../scripts/modules/level-config-ui.js";
-import { scheduleTokenStatusIconRefresh, clearTokenStatusIconRefreshState } from "../scripts/modules/status-effects.js";
+import { scheduleTokenStatusIconRefresh, scheduleTokenStatusIconRefreshBurst, scheduleActorStatusIconRefreshBurst, clearTokenStatusIconRefreshState } from "../scripts/modules/status-effects.js";
+import { collectTokensForActor } from "../scripts/modules/actor-tokens.js";
+import { getCachedPerspectiveGridModel } from "../scripts/modules/projection.js";
 
 const DIAG = { EQUIDISTANT: 0, EXACT: 1, APPROXIMATE: 2, RECTILINEAR: 3, ALTERNATING_1: 4, ALTERNATING_2: 5, ILLEGAL: 6 };
 const rect = { x: 100, y: 150, width: 2000, height: 1500, gridSize: 100 };
@@ -98,6 +100,28 @@ test("ground/elevation projection round trips ordinary flying and underground po
     const p = { ...perspectiveGridModelToScreen(getPerspectiveGridModel(config, rect), 8, row), elevation };
     const recovered = screenPointToElevationGroundPoint(perspectiveGroundPointToElevatedScreen(p, config, rect), config, rect);
     closeTo(recovered.x, p.x); closeTo(recovered.y, p.y, 0.01);
+  }
+});
+
+test("flying above far boundaries stays invertible across curves, rotations and large altitudes", () => {
+  for (const curve of [0.4, 1, 1.45, 4]) for (const rotation of [-15, 0, 15]) {
+    const cfg = normalizeConfig({ enabled: true, curve, far: { rotation }, near: { rotation: rotation / 2 } });
+    const model = getPerspectiveGridModel(cfg, rect);
+    for (const i of [1, model.columns / 2, model.columns - 1]) for (const row of [0, 0.2, 1, 4, 8, 12]) {
+      for (const elevation of [-10, 5, 10, 25, 50]) {
+        const ground = { ...perspectiveGridModelToScreen(model, i, row), elevation };
+        const raised = perspectiveGroundPointToElevatedScreen(ground, cfg, rect, model);
+        const restored = screenPointToElevationGroundPoint(raised, cfg, rect, model);
+        closeTo(restored.x, ground.x, 0.01); closeTo(restored.y, ground.y, 0.01);
+      }
+    }
+  }
+});
+
+test("resetting calibration preserves both values of grid visibility", () => {
+  for (const grid of [false, true]) {
+    const c = new PerspectiveCalibrator(); c.config = normalizeConfig({ grid, curve: 3 }); c._applyConfigChange = () => {};
+    c.reset(); assert.equal(c.config.grid, grid); assert.equal(c.config.curve, 1.45);
   }
 });
 for (const [mode, expected] of [[DIAG.EQUIDISTANT, 4], [DIAG.EXACT, 1 + 2 * Math.SQRT2 + Math.sqrt(3)], [DIAG.APPROXIMATE, 5.75], [DIAG.RECTILINEAR, 8], [DIAG.ALTERNATING_1, 5], [DIAG.ALTERNATING_2, 6], [DIAG.ILLEGAL, 8]]) {
@@ -266,4 +290,129 @@ test("status redraw does not expose hidden effects and stops after token destruc
   scheduleTokenStatusIconRefresh(token); t.mock.timers.tick(0); frames.shift()();
   assert.equal(token.effects.visible, false); token.destroyed = true; finish(); await Promise.resolve();
   assert.equal(refreshes, 0);
+});
+
+test("camera motion reuses grid geometry and does not dirty the scene graph", () => {
+  const overlay = new PerspectiveGridOverlay();
+  overlay.draw();
+  let clears = 0;
+  const clear = overlay.grid.clear.bind(overlay.grid);
+  overlay.grid.clear = () => { clears++; clear(); };
+  canvas.interface.sortDirty = false;
+  for (let i = 0; i < 100; i++) overlay.draw();
+  assert.equal(clears, 0); assert.equal(canvas.interface.sortDirty, false);
+  config.far.x += 0.05; overlay.draw(); assert.equal(clears, 1);
+  canvas.dimensions.sceneWidth += 500; overlay.draw(); assert.equal(clears, 2);
+  config.gridColor = '#123456'; overlay.draw(); assert.equal(clears, 3);
+  config.grid = false; overlay.draw();
+  overlay.forceVisible = true; overlay.draw(); assert.equal(clears, 3);
+  overlay.destroy(); overlay.draw(); assert.ok(overlay.grid.lines.length > 0);
+});
+
+test("overlay detaches the original ticker and notices levels with identical local IDs", () => {
+  const callbacks = new Set();
+  const oldTicker = { add: fn => callbacks.add(fn), remove: fn => callbacks.delete(fn) };
+  canvas.app = { ticker: oldTicker };
+  const overlay = new PerspectiveGridOverlay(); let changes = 0;
+  overlay.onLevelChange = () => { changes++; };
+  overlay.startTicker(); overlay.startTicker(); assert.equal(callbacks.size, 1);
+  canvas.level = { ...canvas.level, uuid: 'Scene.b.Level.a' };
+  overlay._ticker(); assert.equal(changes, 1);
+  canvas.app.ticker = { remove() {} };
+  overlay.destroy(); assert.equal(callbacks.size, 0);
+});
+
+test("runtime settings reuse normalization but detect nested edits and remain isolated from public copies", () => {
+  const first = getRuntimeLevelConfig();
+  for (let i = 0; i < 100; i++) assert.equal(getRuntimeLevelConfig(), first);
+  const editable = getLevelConfig(); editable.far.x = 0.2;
+  assert.notEqual(first.far.x, 0.2);
+  assert.throws(() => { first.far.x = 0.2; }, TypeError);
+  config.far.x = 0.2;
+  const changed = getRuntimeLevelConfig(); assert.notEqual(changed, first); assert.equal(changed.far.x, 0.2);
+  setLevelConfigOverride(canvas.level, { gridScale: 3 }); assert.equal(getRuntimeLevelConfig().gridScale, 3);
+  clearLevelConfigOverride(); assert.equal(getRuntimeLevelConfig().gridScale, 1);
+  config.enabled = ['false', 'true']; assert.equal(getRuntimeLevelConfig().enabled, true);
+  config.enabled[1] = 'false'; assert.equal(getRuntimeLevelConfig().enabled, false);
+  config.grid = undefined; assert.equal(getRuntimeLevelConfig().grid, false);
+  delete config.grid; assert.equal(getRuntimeLevelConfig().grid, true);
+});
+
+test("actor lookup uses the native index without scanning every scene token", () => {
+  const token = {}; const actor = { getActiveTokens: () => [token] };
+  canvas.tokens.placeables = { [Symbol.iterator]() { throw new Error('full scan'); } };
+  assert.deepEqual([...collectTokensForActor(actor)], [token]);
+});
+
+test("synthetic actor lookup does not match another token with the same base actor ID", () => {
+  const actor = { id: 'same', uuid: 'Scene.a.Token.one.Actor.same', isToken: true };
+  const own = { actor }, other = { actor: { ...actor, uuid: 'Scene.a.Token.two.Actor.same' } };
+  canvas.tokens.placeables = [own, other, { actor: { id: 'same', uuid: 'Actor.same' } }];
+  assert.deepEqual([...collectTokensForActor(actor)], [own]);
+});
+
+test("effect event bursts coalesce to one redraw per retry deadline", async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let draws = 0;
+  const token = { async drawEffects() { draws++; } };
+  for (let i = 0; i < 100; i++) scheduleTokenStatusIconRefreshBurst(token);
+  for (const delta of [0, 60, 120, 180]) {
+    t.mock.timers.tick(delta);
+    while (frames.length) frames.shift()();
+    await Promise.resolve();
+  }
+  assert.equal(draws, 4);
+});
+
+test("effect redraws serialize and coalesce updates arriving during a slow draw", async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let finish, draws = 0, positions = 0;
+  const token = { drawEffects() { draws++; return new Promise(resolve => { finish = resolve; }); }, _refreshEffects() { positions++; } };
+  const flush = () => { t.mock.timers.tick(0); while (frames.length) frames.shift()(); };
+  scheduleTokenStatusIconRefresh(token); flush();
+  for (let i = 0; i < 100; i++) scheduleTokenStatusIconRefresh(token);
+  flush(); assert.equal(draws, 1);
+  finish(); await Promise.resolve(); flush(); assert.equal(draws, 2);
+  finish(); await Promise.resolve(); assert.equal(positions, 2);
+});
+
+test("pending effects cannot mutate an old canvas after teardown even if the same scene is reopened", async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let finish, positions = 0;
+  const token = { drawEffects: () => new Promise(resolve => { finish = resolve; }), _refreshEffects() { positions++; } };
+  scheduleTokenStatusIconRefresh(token); t.mock.timers.tick(0); frames.shift()();
+  clearTokenStatusIconRefreshState();
+  finish(); await Promise.resolve(); assert.equal(positions, 0); assert.equal(frames.length, 0);
+});
+
+test("effects completing after a scene change skip position and render updates", async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let finish, positions = 0;
+  const token = { drawEffects: () => new Promise(resolve => { finish = resolve; }), _refreshEffects() { positions++; } };
+  scheduleTokenStatusIconRefresh(token); t.mock.timers.tick(0); frames.shift()();
+  canvas.scene = {};
+  finish(); await Promise.resolve(); assert.equal(positions, 0);
+});
+
+test("inactive perspective does not scan actors or queue effect work", t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  config.enabled = false;
+  scheduleActorStatusIconRefreshBurst({ getActiveTokens() { throw new Error('should not query'); } });
+  scheduleTokenStatusIconRefreshBurst({ drawEffects() { throw new Error('should not draw'); } });
+  t.mock.timers.runAll(); assert.equal(frames.length, 0);
+});
+
+test("runtime grid models are shared until geometry changes without caching mutable drafts", () => {
+  const cfg = getRuntimeLevelConfig();
+  const model = getCachedPerspectiveGridModel(cfg, rect);
+  for (let i = 0; i < 100; i++) assert.equal(getCachedPerspectiveGridModel(cfg, { ...rect }), model);
+  assert.notEqual(getCachedPerspectiveGridModel(cfg, { ...rect, width: rect.width + 100 }), model);
+  config.near.x = 0.8;
+  assert.notEqual(getCachedPerspectiveGridModel(getRuntimeLevelConfig(), rect), model);
+  const draft = getLevelConfig(); const before = getCachedPerspectiveGridModel(draft, rect);
+  draft.near.x = 0.2;
+  const after = getCachedPerspectiveGridModel(draft, rect);
+  assert.notEqual(before.near.center.x, after.near.center.x);
+  const publicModel = getPerspectiveGridModel(cfg, rect); publicModel.near.center.x = -1;
+  assert.notEqual(model.near.center.x, -1);
 });

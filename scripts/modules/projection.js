@@ -1,6 +1,26 @@
-import { getLevelConfig } from "./config.js";
+import { getRuntimeLevelConfig as getLevelConfig } from "./config.js";
 import { getSceneGridDistance, getSceneRect } from "./scene.js";
 import { clamp } from "./utils.js";
+
+const RUNTIME_GRID_MODELS = new WeakMap();
+
+export function getCachedPerspectiveGridModel(config = getLevelConfig(), rect = getSceneRect()) {
+  // Mutable configurations (including calibrator drafts and API arguments) must
+  // always be recalculated. Runtime settings are immutable snapshots.
+  if (!Object.isFrozen(config) || !Object.isFrozen(config.far) || !Object.isFrozen(config.near)) {
+    return getPerspectiveGridModel(config, rect);
+  }
+  const key = [rect.x, rect.y, rect.width, rect.height, rect.gridSize].join("|");
+  const cached = RUNTIME_GRID_MODELS.get(config);
+  if (cached?.key === key) return cached.model;
+  const model = getPerspectiveGridModel(config, { ...rect });
+  for (const line of [model.far, model.near]) {
+    Object.freeze(line.center); Object.freeze(line.left); Object.freeze(line.right); Object.freeze(line);
+  }
+  Object.freeze(model.rect); Object.freeze(model);
+  RUNTIME_GRID_MODELS.set(config, { key, model });
+  return model;
+}
 
 export function anchorToPoint(anchor, rect = getSceneRect()) {
   return {
@@ -53,7 +73,7 @@ function lineDataForAnchor(anchor, length, rect = getSceneRect()) {
 }
 
 export function scaleForPerspectivePoint(point, config = getLevelConfig(), rect = getSceneRect(), model = null) {
-  model ??= getPerspectiveGridModel(config, rect);
+  model ??= getCachedPerspectiveGridModel(config, rect);
   const coords = screenPointToPerspectiveGridRaw(point, config, rect, model);
   const t = clamp(coords.j / Math.max(1, model.rows), 0, 1);
   return config.far.scale + (config.near.scale - config.far.scale) * t;
@@ -69,7 +89,7 @@ export function scaleForPerspectiveToken(point, config = getLevelConfig(), rect 
 }
 
 export function scaleForY(y, config = getLevelConfig(), rect = getSceneRect()) {
-  const model = getPerspectiveGridModel(config, rect);
+  const model = getCachedPerspectiveGridModel(config, rect);
   return scaleForPerspectivePoint({ x: model.near.center.x, y, elevation: 0 }, config, rect, model);
 }
 
@@ -141,12 +161,20 @@ export function getPerspectiveGridModel(config = getLevelConfig(), rect = getSce
 
 export function perspectiveGridModelToScreen(model, column, row) {
   const rawT = model.rows > 0 ? row / model.rows : 0;
-  const clampedRawT = clamp(rawT, -10, 10);
+  const clampedRawT = clamp(rawT, -100, 100);
   const easedT = clampedRawT >= 0
     ? Math.pow(Math.max(0, clampedRawT), model.curve)
     : -Math.pow(Math.abs(clampedRawT), model.curve);
 
   const u = model.columns > 0 ? column / model.columns : 0;
+  if (easedT < 0 || easedT > 1) {
+    // Extend the end plane without letting its width invert past a vanishing
+    // point. Flyers above the far edge must keep a continuous ground inverse.
+    const line = easedT < 0 ? model.far : model.near;
+    const delta = easedT < 0 ? easedT : easedT - 1;
+    return { x: lerp(line.left.x, line.right.x, u) + (model.near.center.x - model.far.center.x) * delta,
+      y: lerp(line.left.y, line.right.y, u) + (model.near.center.y - model.far.center.y) * delta };
+  }
   const left = lerpPoint(model.far.left, model.near.left, easedT);
   const right = lerpPoint(model.far.right, model.near.right, easedT);
 
@@ -157,7 +185,7 @@ export function perspectiveGridModelToScreen(model, column, row) {
 }
 
 export function perspectiveGridToScreen(column, row, config = getLevelConfig(), rect = getSceneRect()) {
-  return perspectiveGridModelToScreen(getPerspectiveGridModel(config, rect), column, row);
+  return perspectiveGridModelToScreen(getCachedPerspectiveGridModel(config, rect), column, row);
 }
 
 function bilinearPoint(model, t, u) {
@@ -185,7 +213,7 @@ function solveBilinearCoordinates(model, point) {
     const width = subtractPoint(right, left);
     const widthLenSq = width.x * width.x + width.y * width.y;
     if (widthLenSq > 0.0001) {
-      u = clamp(((p.x - left.x) * width.x + (p.y - left.y) * width.y) / widthLenSq, -4, 5);
+      u = ((p.x - left.x) * width.x + (p.y - left.y) * width.y) / widthLenSq;
     }
 
     const current = bilinearPoint(model, t, u);
@@ -204,8 +232,8 @@ function solveBilinearCoordinates(model, point) {
 
     const deltaT = (fx * du.y - du.x * fy) / det;
     const deltaU = (dt.x * fy - fx * dt.y) / det;
-    t = clamp(t - deltaT, -4, 5);
-    u = clamp(u - deltaU, -4, 5);
+    t = clamp(t - deltaT, -100, 100);
+    u -= deltaU;
   }
 
   return { t, u };
@@ -220,7 +248,7 @@ function projectionOnGridRow(model, row, point) {
 
   // Allow a generous amount of measuring just outside the drawn strip, but do
   // not let pathological anchor rotations choose a wildly distant extension.
-  const u = clamp(rawU, -4, 5);
+  const u = rawU;
   const projected = {
     x: left.x + width.x * u,
     y: left.y + width.y * u
@@ -252,13 +280,31 @@ function betterGridProjection(a, b, epsilon = 0.0001) {
 function solveVisualGridCoordinates(model, point) {
   const p = getPointXY(point);
   const seed = solveBilinearCoordinates(model, p);
-  const seedRow = Math.sign(seed.t) * Math.pow(Math.abs(seed.t), 1 / model.curve) * model.rows;
+  const seedT = Math.abs(seed.t) < 1e-10 ? 0 : (Math.abs(seed.t - 1) < 1e-10 ? 1 : seed.t);
+  const seedRow = Math.sign(seedT) * Math.pow(Math.abs(seedT), 1 / model.curve) * model.rows;
   const seedProjection = Number.isFinite(seedRow) ? projectionOnGridRow(model, seedRow, p) : null;
   // Convex grids have one inverse inside their borders. Avoid hundreds of row
   // samples for every token/elevation refresh in this common case.
-  if (model.convex && seed.t > 0.000001 && seed.t < 0.999999 && seed.u >= 0 && seed.u <= 1
+  if (model.convex && seedT >= 0 && seedT <= 1 && seed.u >= 0 && seed.u <= 1
     && seedProjection?.distanceSquared < 0.0000000001) {
     return { i: seedProjection.u * model.columns, j: seedRow, elevation: p.elevation };
+  }
+  if (model.convex) {
+    const axis = subtractPoint(model.near.center, model.far.center);
+    for (const [line, end] of [[model.far, 0], [model.near, 1]]) {
+      const width = subtractPoint(line.right, line.left), relative = subtractPoint(p, line.left);
+      const det = axis.x * width.y - axis.y * width.x;
+      if (Math.abs(det) < 1e-8) continue;
+      const delta = (relative.x * width.y - relative.y * width.x) / det;
+      if ((end === 0 && delta >= 0) || (end === 1 && delta <= 0)) continue;
+      const t = delta + end;
+      const u = (axis.x * relative.y - axis.y * relative.x) / det;
+      return { i: u * model.columns, j: Math.sign(t) * Math.pow(Math.abs(t), 1 / model.curve) * model.rows,
+        elevation: p.elevation };
+    }
+    if (seedT >= 0 && seedT <= 1 && seedProjection?.distanceSquared < 1e-10) {
+      return { i: seedProjection.u * model.columns, j: seedRow, elevation: p.elevation };
+    }
   }
   const minRow = 0;
   const maxRow = model.rows;
@@ -318,14 +364,14 @@ function solveVisualGridCoordinates(model, point) {
 
 function screenPointToPerspectiveGridRaw(point, config = getLevelConfig(), rect = getSceneRect(), model = null) {
   const p = getPointXY(point);
-  model ??= getPerspectiveGridModel(config, rect);
+  model ??= getCachedPerspectiveGridModel(config, rect);
   const coords = solveVisualGridCoordinates(model, p);
   coords.elevation = p.elevation;
   return coords;
 }
 
 export function getPerspectiveCellScreenHeightAtRow(row, config = getLevelConfig(), rect = getSceneRect(), model = null) {
-  model ??= getPerspectiveGridModel(config, rect);
+  model ??= getCachedPerspectiveGridModel(config, rect);
   const safeRow = Number.isFinite(Number(row)) ? Number(row) : 0;
   const p0 = perspectiveGridModelToScreen(model, model.columns / 2, safeRow);
   const p1 = perspectiveGridModelToScreen(model, model.columns / 2, safeRow + 1);
@@ -340,54 +386,46 @@ export function elevationToScreenOffsetAtRow(elevation, row, config = getLevelCo
   const gridDistance = Math.max(0.0001, getSceneGridDistance());
   const spaces = e / gridDistance;
 
-  // Elevation is stored in real scene distance units. Convert it to grid
-  // spaces with the active scene Grid -> Distance. gridScale is visual-only
-  // here; one perspective row still represents one Foundry grid space.
-  return spaces * getPerspectiveCellScreenHeightAtRow(row, config, rect, model);
+  model ??= getCachedPerspectiveGridModel(config, rect);
+  // Integrate across the displaced rows instead of extrapolating one cell's
+  // local derivative for the entire altitude. The latter folds near the far
+  // anchor on curved grids, giving several ground positions for one flyer.
+  const ground = perspectiveGridModelToScreen(model, model.columns / 2, row);
+  const raised = perspectiveGridModelToScreen(model, model.columns / 2, row - spaces);
+  return ground.y - raised.y;
 }
 
 export function screenPointToElevationGroundPoint(point, config = getLevelConfig(), rect = getSceneRect(), model = null) {
   const p = getPointXY(point);
   if (Math.abs(p.elevation) < 0.0001) return p;
-  model ??= getPerspectiveGridModel(config, rect);
+  model ??= getCachedPerspectiveGridModel(config, rect);
 
-  // Foundry v14 stores token elevation in real scene units. For perspective mode we
-  // interpret the token's canvas Y as a projected/elevated visual point and recover
-  // the ground point under it. Solve y - offset(y) = screenY, rather than a
-  // fixed five substitutions which drift/oscillate on curved grids.
-  let groundY = p.y;
-  let bestY = groundY;
-  let bestError = Infinity;
-  const offsetAt = y => {
-    const coords = screenPointToPerspectiveGridRaw({ x: p.x, y, elevation: 0 }, config, rect, model);
-    return elevationToScreenOffsetAtRow(p.elevation, coords.j, config, rect, model);
-  };
-  for (let i = 0; i < 20; i++) {
-    const offset = offsetAt(groundY);
-    const residual = groundY - offset - p.y;
-    const error = Math.abs(residual);
-    if (error < bestError) { bestError = error; bestY = groundY; }
-    if (error < 0.0001) break;
-    const derivative = 1 - (offsetAt(groundY + 0.25) - offset) / 0.25;
-    const step = Math.abs(derivative) > 0.0001 ? residual / derivative : residual * 0.5;
-    groundY -= clamp(step, -rect.height, rect.height);
-  }
+  // Altitude displaces a continuous row coordinate, not an extrapolated local
+  // cell derivative. Inverting this translation avoids unstable Newton roots.
+  const visual = screenPointToPerspectiveGridRaw({ ...p, elevation: 0 }, config, rect, model);
+  const groundRow = visual.j + p.elevation / getSceneGridDistance();
+  return { ...pointOnGridRowAtX(model, groundRow, p.x), elevation: p.elevation };
+}
 
-  return { x: p.x, y: bestY, elevation: p.elevation };
+function pointOnGridRowAtX(model, row, x) {
+  const left = perspectiveGridModelToScreen(model, 0, row);
+  const right = perspectiveGridModelToScreen(model, model.columns, row);
+  const dx = right.x - left.x;
+  const u = Math.abs(dx) > 1e-8 ? (x - left.x) / dx : 0.5;
+  return { x, y: left.y + (right.y - left.y) * u };
 }
 
 export function perspectiveGroundPointToElevatedScreen(point, config = getLevelConfig(), rect = getSceneRect(), model = null) {
   const p = getPointXY(point);
   if (Math.abs(p.elevation) < 0.0001) return p;
-  model ??= getPerspectiveGridModel(config, rect);
+  model ??= getCachedPerspectiveGridModel(config, rect);
 
   const coords = screenPointToPerspectiveGridRaw({ x: p.x, y: p.y, elevation: 0 }, config, rect, model);
-  const offset = elevationToScreenOffsetAtRow(p.elevation, coords.j, config, rect, model);
-  return { x: p.x, y: p.y - offset, elevation: p.elevation };
+  return { ...pointOnGridRowAtX(model, coords.j - p.elevation / getSceneGridDistance(), p.x), elevation: p.elevation };
 }
 
 export function screenPointToPerspectiveGrid(point, config = getLevelConfig(), rect = getSceneRect(), model = null) {
-  model ??= getPerspectiveGridModel(config, rect);
+  model ??= getCachedPerspectiveGridModel(config, rect);
   const p = screenPointToElevationGroundPoint(point, config, rect, model);
   const coords = screenPointToPerspectiveGridRaw(p, config, rect, model);
   coords.elevation = p.elevation;

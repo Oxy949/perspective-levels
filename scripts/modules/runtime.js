@@ -1,6 +1,9 @@
 import { MODULE_ID } from "./constants.js";
 import { i18n } from "./utils.js";
-import { getLevelConfig, isPerspectiveEnabled, normalizeConfig, setLevelConfig } from "./config.js";
+import { getLevelConfig, getRuntimeLevelConfig, clearRuntimeLevelConfigCache, isPerspectiveEnabled, normalizeConfig, setLevelConfig } from "./config.js";
+import { collectTokensForActor } from "./actor-tokens.js";
+import { adaptSequencerEffect } from "./token-visuals.js";
+import { refreshPerspectiveRegions, clearPerspectiveRegionState } from "./region-perspective.js";
 import { PerspectiveCalibrator } from "./calibrator.js";
 import { PerspectiveGridOverlay } from "./grid-overlay.js";
 import { injectLevelConfig } from "./level-config-ui.js";
@@ -68,6 +71,7 @@ function refreshOverlays() {
 }
 
 export function refreshAll() {
+  refreshPerspectiveRegions();
   refreshOverlays();
   refreshTokens();
   schedulePerspectiveSort({ force: true });
@@ -78,8 +82,9 @@ function injectLevelConfigWithRuntime(app, html) {
 }
 
 function getHookTokenObject(value) {
-  if (isTokenObject(value)) return value;
-  const object = value?.object ?? value?.token?.object ?? value?.placeable ?? null;
+  if (!globalThis.canvas?.ready) return null;
+  const object = isTokenObject(value) ? value : value?.object ?? value?.token?.object ?? value?.placeable ?? null;
+  if (object?.document?.parent && object.document.parent !== globalThis.canvas.scene) return null;
   return isTokenObject(object) ? object : null;
 }
 
@@ -88,11 +93,7 @@ function refreshTokenFromHook(value, { debounce = false } = {}) {
   if (token) {
     applyPerspectiveToToken(token, { scheduleSort: false });
     schedulePerspectiveSort({ token, debounce });
-    return;
   }
-
-  refreshTokens();
-  schedulePerspectiveSort({ force: true, debounce });
 }
 
 export function registerHooks() {
@@ -140,6 +141,7 @@ export function registerHooks() {
   });
 
   hooks.on("canvasPan", () => refreshOverlays());
+  hooks.on("createSequencerEffect", adaptSequencerEffect);
 
   hooks.on("createActiveEffect", effect => {
     try { scheduleActorStatusIconRefreshBurst(getActorFromActiveEffect(effect), { redraw: true }); }
@@ -147,13 +149,8 @@ export function registerHooks() {
   });
 
   hooks.on("updateActor", (actor, changes = {}) => {
-    if (!isTokenArtMultiplierUpdate(changes)) return;
-    forEachToken(token => {
-      const tokenActor = token.actor ?? token.document?.actor;
-      if (tokenActor === actor || (actor.id && (tokenActor?.id ?? token.document?.actorId) === actor.id)) {
-        schedulePerspectiveUpdate(token);
-      }
-    });
+    if (!isTokenArtMultiplierUpdate(changes) || !globalThis.canvas?.ready || !getRuntimeLevelConfig().enabled) return;
+    for (const token of collectTokensForActor(actor)) schedulePerspectiveUpdate(token);
   });
 
   hooks.on("updateActiveEffect", effect => {
@@ -173,10 +170,12 @@ export function registerHooks() {
 
   hooks.on("createToken", token => {
     try {
-      const config = getLevelConfig();
+      const object = getHookTokenObject(token);
+      if (!object) return;
+      const config = getRuntimeLevelConfig();
       if (isPerspectiveEnabled(config)) {
-        applyPerspectiveToToken(token.object, { scheduleSort: false });
-        schedulePerspectiveSort({ token: token.object, debounce: true });
+        applyPerspectiveToToken(object, { scheduleSort: false });
+        schedulePerspectiveSort({ token: object, debounce: true });
       }
     } catch (err) {
       console.warn(`${MODULE_ID} | Failed to apply perspective to new token`, err);
@@ -186,18 +185,19 @@ export function registerHooks() {
   hooks.on("updateToken", (token, changes = {}, options = {}) => {
     try {
       if (options?._perspectiveLevelsSort && Object.keys(changes ?? {}).every(key => key === "sort" || key === "_id")) return;
-
-      const config = getLevelConfig();
+      const object = getHookTokenObject(token);
+      if (!object) return;
+      const config = getRuntimeLevelConfig();
       if (isPerspectiveEnabled(config)) {
         const positionChanged = changes.x !== undefined || changes.y !== undefined || changes.elevation !== undefined || changes.level !== undefined;
 
         if (positionChanged && options?.animate !== false && !options?._perspectiveLevelsKeyboardMove) {
-          schedulePerspectiveSort({ token: token.object, debounce: true });
+          schedulePerspectiveSort({ token: object, debounce: true });
           return;
         }
 
-        applyPerspectiveToToken(token.object, { scheduleSort: !positionChanged });
-        if (positionChanged) schedulePerspectiveSort({ token: token.object, debounce: true });
+        applyPerspectiveToToken(object, { scheduleSort: !positionChanged });
+        if (positionChanged) schedulePerspectiveSort({ token: object, debounce: true });
       }
     } catch (err) {
       console.warn(`${MODULE_ID} | Failed to apply perspective to updated token`, err);
@@ -205,6 +205,7 @@ export function registerHooks() {
   });
 
   hooks.on("canvasTearDown", () => {
+    clearPerspectiveRegionState();
     calibrator.close(false);
     gridOverlay.stopTicker();
     gridOverlay.destroy();
@@ -213,6 +214,7 @@ export function registerHooks() {
     clearPerspectiveSortState();
     clearPerspectiveUpdateState();
     clearTokenStatusIconRefreshState();
+    clearRuntimeLevelConfigCache();
   });
 
   hooks.on("drawToken", object => {
@@ -233,7 +235,8 @@ export function registerHooks() {
   const onConfigDocumentUpdate = (document, changes = {}) => {
     const canvasRef = globalThis.canvas;
     if (!canvasRef?.ready) return;
-    if (document?.documentName === "Level" && document.parent?.id === canvasRef.scene?.id) refreshAll();
+    if (document?.documentName === "Level" && document.parent?.id === canvasRef.scene?.id
+      && document.id === canvasRef.level?.id) refreshAll();
 
     if (document?.documentName === "Scene" && document.id === canvasRef.scene?.id) {
       const hasProperty = globalThis.foundry?.utils?.hasProperty;

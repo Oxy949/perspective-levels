@@ -1,6 +1,7 @@
 import { MODULE_ID } from "./constants.js";
-import { getLevelConfig, isPerspectiveEnabled } from "./config.js";
+import { getRuntimeLevelConfig as getLevelConfig, isPerspectiveEnabled } from "./config.js";
 import { applyPerspectiveToToken, isTokenObject, schedulePerspectiveSort } from "./tokens.js";
+import { buildTokenPreviewIndex, getIndexedTokenPreviews } from "./token-previews.js";
 
 const PENDING_PERSPECTIVE_UPDATES = new Set();
 const PENDING_PERSPECTIVE_TOKEN_ONLY_UPDATES = new Set();
@@ -8,68 +9,15 @@ const PENDING_PERSPECTIVE_UPDATE_BURSTS = new Map();
 const PERSPECTIVE_UPDATE_BURST_DELAYS_MS = [0, 50, 125, 250, 500];
 let PENDING_PERSPECTIVE_RAF = null;
 
-function addTokenLikeToSet(value, set, seen, token) {
-  if (!value || typeof value !== "object") return;
-  if (seen.has(value)) return;
-  seen.add(value);
-
-  if (isTokenObject(value)) {
-    const original = token?._original ?? token;
-    const candidateOriginal = value?._original ?? value;
-    const sameDocument = original?.document?.uuid && original.document.uuid === candidateOriginal?.document?.uuid;
-    if (value === token || candidateOriginal === original || sameDocument) set.add(value);
-    return;
-  }
-
-  if (Array.isArray(value) || value instanceof Set) {
-    for (const entry of value) addTokenLikeToSet(entry, set, seen, token);
-    return;
-  }
-
-  if (value instanceof Map) {
-    for (const entry of value.values()) addTokenLikeToSet(entry, set, seen, token);
-    return;
-  }
-
-  if (Array.isArray(value.children)) {
-    for (const child of value.children) addTokenLikeToSet(child, set, seen, token);
-  }
-
-  if (Array.isArray(value.placeables)) {
-    for (const placeable of value.placeables) addTokenLikeToSet(placeable, set, seen, token);
-  }
-}
-
 export function collectTokenAndDragPreviews(token) {
-  const set = new Set();
-  const seen = new Set();
-  addTokenLikeToSet(token, set, seen, token);
-
-  for (const key of ["_preview", "preview", "_dragPreview", "_movementPreview", "_previewObject"]) {
-    try { addTokenLikeToSet(token?.[key], set, seen, token); }
-    catch (_err) { /* private access may throw in some builds */ }
-  }
-
-  const canvasRef = globalThis.canvas;
-  const layer = token?.layer ?? canvasRef?.tokens;
-  for (const source of [
-    layer?.preview,
-    layer?._preview,
-    layer?.previews,
-    layer?._previews,
-    layer?.objects?.preview,
-    canvasRef?.tokens?.preview,
-    canvasRef?.tokens?._preview
-  ]) {
-    addTokenLikeToSet(source, set, seen, token);
-  }
-
-  return [...set];
+  return getIndexedTokenPreviews(token, buildTokenPreviewIndex([token], isTokenObject));
 }
 
-function applyPerspectiveToTokenAndPreviews(token, touchedTokens) {
+function applyPerspectiveToTokenAndPreviews(token, touchedTokens, previewIndex = null) {
+  if (!token) return;
   if (token.destroyed || touchedTokens.has(token)) return;
-  for (const preview of collectTokenAndDragPreviews(token)) {
+  const previews = previewIndex ? getIndexedTokenPreviews(token, previewIndex) : collectTokenAndDragPreviews(token);
+  for (const preview of previews) {
     if (touchedTokens.has(preview) || preview.destroyed) continue;
     applyPerspectiveToToken(preview, { scheduleSort: false });
     touchedTokens.add(preview);
@@ -87,9 +35,10 @@ function flushPerspectiveUpdates() {
   if (!isPerspectiveEnabled(config)) return;
 
   const touchedTokens = new Set();
+  const previewIndex = buildTokenPreviewIndex(tokens, isTokenObject);
   for (const token of tokens) {
     try {
-      applyPerspectiveToTokenAndPreviews(token, touchedTokens);
+      applyPerspectiveToTokenAndPreviews(token, touchedTokens, previewIndex);
     } catch (err) {
       console.warn(`${MODULE_ID} | Failed to update perspective`, err);
     }
@@ -166,7 +115,7 @@ export function applyPerspectiveUpdateNow(token) {
 
 export function applyOrSchedulePerspectiveUpdate(token) {
   try {
-    if (!applyPerspectiveUpdateNow(token)) schedulePerspectiveUpdate(token);
+    applyPerspectiveUpdateNow(token);
   } catch (err) {
     console.warn(`${MODULE_ID} | Failed to update token perspective immediately`, err);
     schedulePerspectiveUpdate(token);

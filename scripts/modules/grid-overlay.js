@@ -1,4 +1,4 @@
-import { getLevelConfig } from "./config.js";
+import { getRuntimeLevelConfig as getLevelConfig } from "./config.js";
 import { getPerspectiveGridModel, perspectiveGridModelToScreen } from "./projection.js";
 import { getSceneRect } from "./scene.js";
 import { parseColor } from "./utils.js";
@@ -9,7 +9,10 @@ export class PerspectiveGridOverlay {
     this.grid = null;
     this.parent = null;
     this.forceVisible = false;
-    this._lastLevelId = null;
+    this._lastLevel = null;
+    this._lastScene = null;
+    this._activeTicker = null;
+    this._geometrySignature = null;
     this._ticker = this._ticker.bind(this);
   }
 
@@ -36,11 +39,14 @@ export class PerspectiveGridOverlay {
 
     // Внутри interface overlay должен быть самым нижним слоем, но весь
     // InterfaceCanvasGroup всё равно находится выше фона/тайлов уровня.
+    const changed = this.container.zIndex !== -1_000_000 || this.container.sort !== -1_000_000 || !parent.sortableChildren;
     this.container.zIndex = -1_000_000;
     this.container.sort = this.container.zIndex;
 
     try { parent.sortableChildren = true; } catch (_err) { /* noop */ }
-    try { parent.sortDirty = true; } catch (_err) { /* noop */ }
+    if (changed) {
+      try { parent.sortDirty = true; } catch (_err) { /* noop */ }
+    }
   }
 
   attachToParent(parent) {
@@ -88,6 +94,7 @@ export class PerspectiveGridOverlay {
       this.container.cullable = false;
 
       this.grid = new PIXI.Graphics();
+      this._geometrySignature = null;
       this.grid.name = "PerspectiveLevels.Grid";
       this.grid.eventMode = "none";
       this.grid.interactive = false;
@@ -104,27 +111,35 @@ export class PerspectiveGridOverlay {
   }
 
   destroy() {
+    this.stopTicker();
     if (this.container && !this.container.destroyed) this.container.destroy({ children: true });
     this.container = null;
     this.grid = null;
     this.parent = null;
+    this._geometrySignature = null;
+    this._lastLevel = this._lastScene = null;
   }
 
   startTicker() {
+    this.stopTicker();
     const ticker = globalThis.canvas?.app?.ticker;
     if (!ticker) return;
-    try { ticker.remove(this._ticker); } catch (_err) { /* noop */ }
     ticker.add(this._ticker);
+    this._activeTicker = ticker;
+    this._lastLevel = globalThis.canvas?.level;
+    this._lastScene = globalThis.canvas?.scene;
   }
 
   stopTicker() {
-    try { globalThis.canvas?.app?.ticker?.remove(this._ticker); } catch (_err) { /* noop */ }
+    try { this._activeTicker?.remove(this._ticker); } catch (_err) { /* noop */ }
+    this._activeTicker = null;
   }
 
   _ticker() {
-    const id = globalThis.canvas?.level?.id ?? null;
-    if (id !== this._lastLevelId) {
-      this._lastLevelId = id;
+    const { level, scene } = globalThis.canvas ?? {};
+    if (level !== this._lastLevel || scene !== this._lastScene) {
+      this._lastLevel = level;
+      this._lastScene = scene;
       this.onLevelChange?.();
     }
   }
@@ -134,14 +149,17 @@ export class PerspectiveGridOverlay {
 
     const config = getLevelConfig(globalThis.canvas?.level);
     this.container.visible = Boolean(config.enabled && (config.grid || this.forceVisible));
-    this.grid.clear();
     if (!this.container.visible) return;
 
-    // Если другой модуль/Foundry переставил interface children уже после ensure,
-    // перед самой отрисовкой ещё раз поднимаем overlay над сценой.
-    if (this.parent) this.attachToParent(this.parent);
-
     const rect = getSceneRect();
+    // Camera pan/zoom changes the parent transform, not scene-space geometry.
+    const signature = [rect.x, rect.y, rect.width, rect.height, rect.gridSize,
+      config.gridScale, config.sceneDepthCells, config.curve,
+      config.far.x, config.far.y, config.far.scale, config.far.rotation,
+      config.near.x, config.near.y, config.near.scale, config.near.rotation,
+      config.gridLineWidth, config.gridColor, config.gridAlpha].join("|");
+    if (signature === this._geometrySignature) return;
+    this.grid.clear();
     const lineStyle = {
       width: config.gridLineWidth,
       color: parseColor(config.gridColor, 0xffffff),
@@ -170,5 +188,6 @@ export class PerspectiveGridOverlay {
     }
 
     g.stroke?.(lineStyle);
+    this._geometrySignature = signature;
   }
 }

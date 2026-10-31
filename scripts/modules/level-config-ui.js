@@ -230,6 +230,13 @@ export function injectLevelConfig(app, html, { openCalibrator } = {}) {
             </div>
 
             <div class="perspective-levels-row">
+              <label>${i18n("PERSPECTIVE_LEVELS.SelectionOutline")}</label>
+              <div class="perspective-levels-control">
+                ${booleanControl("selectionOutline", cfg.selectionOutline)}
+              </div>
+            </div>
+
+            <div class="perspective-levels-row">
               <label>${i18n("PERSPECTIVE_LEVELS.Distance")}</label>
               <div class="perspective-levels-control">
                 ${booleanControl("distance", cfg.distance)}

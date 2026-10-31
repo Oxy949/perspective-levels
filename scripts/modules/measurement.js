@@ -1,4 +1,4 @@
-import { getLevelConfig } from "./config.js";
+import { getRuntimeLevelConfig as getLevelConfig } from "./config.js";
 import { getSceneGridDistance, getSceneRect } from "./scene.js";
 import { getPointXY, screenPointToPerspectiveGrid } from "./projection.js";
 import { safeArray } from "./utils.js";

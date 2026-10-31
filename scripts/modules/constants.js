@@ -5,6 +5,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   enabled: false,
   grid: true,
   tokenScaling: true,
+  selectionOutline: true,
   distance: true,
   gridColor: "#ffffff",
   gridAlpha: 0.32,

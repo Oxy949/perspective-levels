@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
 import { installTokenPerspectiveLifecyclePatches } from "../scripts/modules/token-lifecycle-patches.js";
 import { installTokenPerspectiveShapePatch } from "../scripts/modules/token-hit-testing.js";
-import { clearPerspectiveUpdateState, collectTokenAndDragPreviews, schedulePerspectiveUpdate } from "../scripts/modules/token-update-queue.js";
+import { clearPerspectiveUpdateState, collectTokenAndDragPreviews, schedulePerspectiveUpdate, applyOrSchedulePerspectiveUpdate } from "../scripts/modules/token-update-queue.js";
 import { applyPerspectiveToToken, clearPerspectiveSortState, clearTokenScaleState, getTokenGroundPoint, removePerspectiveFromToken, schedulePerspectiveSort } from "../scripts/modules/tokens.js";
 import { registerHooks, gridOverlay, calibrator } from "../scripts/modules/runtime.js";
 import { getTokenArtMultiplier, isTokenArtMultiplierUpdate } from "../scripts/modules/token-art.js";
+import { getPerspectiveGridModel, perspectiveGridModelToScreen, perspectiveGroundPointToElevatedScreen, screenPointToPerspectiveGrid } from "../scripts/modules/projection.js";
+import { normalizeConfig } from "../scripts/modules/config.js";
 
 class Point {
   constructor(x = 0, y = 0) { this.set(x, y); }
@@ -236,6 +238,35 @@ test("group drag updates each token family once instead of updating unrelated pr
   for (const token of [...originals, ...previews]) assert.equal(updates.get(token), 1);
 });
 
+test("a 120-token drag scans shared previews once per update and once per sort", () => {
+  const originals = Array.from({ length: 120 }, (_, i) => new Token(`token-${i}`, { y: 200 + i * 6 }));
+  const previews = originals.map((original, i) => {
+    const clone = new Token(original.document.id, { y: 1200 - i * 6 }); clone._original = original;
+    canvas.tokens.preview.addChild(clone); return clone;
+  });
+  canvas.tokens.placeables = originals;
+  let visits = 0;
+  canvas.tokens.preview.children[Symbol.iterator] = function* () {
+    for (let i = 0; i < this.length; i++) { visits++; yield this[i]; }
+  };
+  for (const token of originals) schedulePerspectiveUpdate(token);
+  frameCallbacks.shift()(); assert.equal(visits, 120);
+  for (const preview of previews) assert.ok(preview.mesh._perspectiveLevelsAppliedScale);
+  framesUntilIdle(); assert.equal(visits, 240);
+  assert.ok(originals[0].document.sort > originals.at(-1).document.sort);
+});
+
+test("a synthetic actor height change only queues its own token", () => {
+  const actor = { id: 'same', uuid: 'Scene.test.Token.a.Actor.same', isToken: true };
+  const own = new Token('a'), other = new Token('b');
+  own.actor = actor; other.actor = { ...actor, uuid: 'Scene.test.Token.b.Actor.same' };
+  canvas.tokens.placeables = [own, other];
+  hooks.get('updateActor')(actor, { 'flags.ginzzzu-portraits.emotionHeightMultiplier': 2 });
+  frameCallbacks.shift()();
+  assert.ok(own.mesh._perspectiveLevelsAppliedScale);
+  assert.equal(other.mesh._perspectiveLevelsAppliedScale, undefined);
+});
+
 test("a group changes height without touching originals and can be dragged again after drop", () => {
   const tokens = [new Token("a"), new Token("b", { x: 500, y: 800, elevation: 5 })];
   const source = tokens.map(token => ({ ...token.document._source }));
@@ -307,6 +338,35 @@ test("explicit elevation changes take precedence over Shift flight", () => {
   const current = token.document._source;
   assert.equal(token._getDragWaypointPosition(current, { elevation: 15 }).elevation, 15);
   assert.equal(token._getDragWaypointPosition(current, { y: 650, elevation: -10 }).elevation, -10);
+});
+
+test("high Shift flight keeps the same ground position and perspective size", () => {
+  config = normalizeConfig({ enabled: true });
+  const token = new Token('a');
+  applyPerspectiveToToken(token, { scheduleSort: false });
+  const ground = getTokenGroundPoint(token), scale = token.mesh._perspectiveLevelsAppliedScale;
+  const event = startDrag([token]);
+  for (const dy of [-100, -300, -800]) {
+    event.dx = 0; event.dy = dy; token._onDragLeftMove(event);
+    const destination = event.interactionData.contexts[0].destination;
+    const clone = new Token('a', destination); clone._original = token;
+    applyPerspectiveToToken(clone, { scheduleSort: false });
+    const restored = getTokenGroundPoint(clone);
+    closeTo(restored.x, ground.x, 0.1); closeTo(restored.y, ground.y, 0.1);
+    closeTo(clone.mesh._perspectiveLevelsAppliedScale, scale, 0.001);
+  }
+});
+
+test("token drag snapping follows perspective cell coordinates at altitude", () => {
+  config = normalizeConfig({ enabled: true, gridScale: 2 });
+  const token = new Token('a');
+  const rect = { x: 0, y: 0, width: 2000, height: 1500, gridSize: 100 }, model = getPerspectiveGridModel(config, rect);
+  const ground = perspectiveGridModelToScreen(model, 5.76, 6.3);
+  const position = perspectiveGroundPointToElevatedScreen({ ...ground, elevation: 25 }, config, rect, model);
+  const current = { x: position.x - 50, y: position.y - 100, elevation: 25 };
+  const result = token._getDragWaypointPosition(current, { x: current.x, y: current.y }, { snap: true });
+  const coords = screenPointToPerspectiveGrid({ x: result.x + 50, y: result.y + 100, elevation: 25 }, config, rect, model);
+  closeTo(coords.i, 5.5, 0.02); closeTo(coords.j, 6, 0.02);
 });
 
 test("ordinary movement retains the preview elevation when Shift is released", () => {
@@ -638,12 +698,77 @@ test("Foundry draw/refresh/destroy hooks initialize and clean up clone shadows w
 test("native Level and Scene update hooks refresh affected scenes only", t => {
   let draws = 0; t.mock.method(gridOverlay, 'draw', () => { draws++; });
   canvas.scene.id = 'scene';
-  hooks.get('updateLevel')({ documentName: 'Level', parent: { id: 'scene' } }, { flags: {} });
+  hooks.get('updateLevel')({ id: canvas.level.id, documentName: 'Level', parent: { id: 'scene' } }, { flags: {} });
   hooks.get('updateScene')({ documentName: 'Scene', id: 'scene' }, { 'grid.distance': 10 });
   assert.equal(draws, 2);
   hooks.get('updateLevel')({ documentName: 'Level', parent: { id: 'other' } }, {});
+  hooks.get('updateLevel')({ id: 'inactive', documentName: 'Level', parent: { id: 'scene' } }, { flags: {} });
   hooks.get('updateScene')({ documentName: 'Scene', id: 'scene' }, { name: 'other' });
   assert.equal(draws, 2);
+});
+
+test("foreign scene token hooks do not rebuild or sort the visible scene", () => {
+  const token = new Token('foreign'); token.document.parent = { id: 'other' }; token.document.object = token;
+  for (const name of ['createToken', 'updateToken', 'moveToken', 'recordToken', 'stopToken']) hooks.get(name)(token.document, { x: 5 });
+  assert.equal(frameCallbacks.length, 0);
+  assert.equal(token.mesh._perspectiveLevelsAppliedScale, undefined);
+  hooks.get('updateToken')({ object: null }, { x: 5 });
+  assert.equal(frameCallbacks.length, 0);
+});
+
+test("inactive perspective does not schedule a fallback on every native refresh", () => {
+  config.enabled = false; const token = new Token('a');
+  for (let i = 0; i < 100; i++) applyOrSchedulePerspectiveUpdate(token);
+  assert.equal(frameCallbacks.length, 0);
+});
+
+test("loading textures queue one size retry per token and discard it on teardown", () => {
+  const token = new Token('loading'); token.mesh.texture = {};
+  for (let i = 0; i < 10; i++) applyPerspectiveToToken(token, { scheduleSort: false });
+  assert.equal(frameCallbacks.length, 1);
+  clearTokenScaleState(); removePerspectiveFromToken(token);
+  const scale = token.mesh.scale.x;
+  frameCallbacks.shift()();
+  assert.equal(token.mesh.scale.x, scale);
+  assert.equal(token.mesh._perspectiveLevelsAppliedScale, undefined);
+  assert.equal(frameCallbacks.length, 0);
+});
+
+test("loading texture retries cannot update a token after switching scenes", () => {
+  const token = new Token('loading'); token.mesh.texture = {};
+  applyPerspectiveToToken(token, { scheduleSort: false });
+  canvas.scene = {};
+  const scale = token.mesh.scale.x;
+  frameCallbacks.shift()();
+  assert.equal(token.mesh.scale.x, scale);
+  assert.equal(frameCallbacks.length, 0);
+});
+
+test("late sort persistence from the previous canvas cannot suppress persistence on a new canvas", async () => {
+  let finishOld, finishNew; let oldWrites = 0, newWrites = 0;
+  const oldToken = new Token('a'); canvas.tokens.placeables = [oldToken];
+  canvas.scene.updateEmbeddedDocuments = () => { oldWrites++; return new Promise(resolve => { finishOld = resolve; }); };
+  schedulePerspectiveSort({ persist: true, force: true }); framesUntilIdle(); assert.equal(oldWrites, 1);
+  clearPerspectiveSortState();
+  canvas.scene = { updateEmbeddedDocuments: () => { newWrites++; return new Promise(resolve => { finishNew = resolve; }); } };
+  canvas.tokens.placeables = [new Token('a')];
+  // Both scenes produce the same ID/sort signature.
+  finishOld(); await Promise.resolve();
+  schedulePerspectiveSort({ persist: true, force: true }); framesUntilIdle(); assert.equal(newWrites, 1);
+  finishNew(); await Promise.resolve();
+});
+
+test("new scene sort writes can start while an old scene write is still pending", async () => {
+  let finishOld; let newWrites = 0;
+  canvas.tokens.placeables = [new Token('a')];
+  canvas.scene.updateEmbeddedDocuments = () => new Promise(resolve => { finishOld = resolve; });
+  schedulePerspectiveSort({ persist: true }); framesUntilIdle();
+  clearPerspectiveSortState();
+  canvas.scene = { updateEmbeddedDocuments: async () => { newWrites++; } };
+  canvas.tokens.placeables = [new Token('b')];
+  schedulePerspectiveSort({ persist: true }); framesUntilIdle(); assert.equal(newWrites, 1);
+  await Promise.resolve(); finishOld(); await Promise.resolve();
+  assert.equal(frameCallbacks.length, 0);
 });
 
 test("the first canvasReady refresh updates hit bounds after an early draw", () => {

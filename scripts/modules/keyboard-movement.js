@@ -1,5 +1,5 @@
 import { MODULE_ID } from "./constants.js";
-import { getLevelConfig, isPerspectiveEnabled } from "./config.js";
+import { getRuntimeLevelConfig as getLevelConfig, isPerspectiveEnabled } from "./config.js";
 import {
   perspectiveGridToScreen,
   perspectiveGroundPointToElevatedScreen,

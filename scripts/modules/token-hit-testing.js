@@ -1,5 +1,5 @@
 import { MODULE_ID } from "./constants.js";
-import { getLevelConfig, isPerspectiveEnabled } from "./config.js";
+import { getRuntimeLevelConfig as getLevelConfig, isPerspectiveEnabled } from "./config.js";
 import { getTokenClass, wrapPrototypeMethod } from "./foundry-helpers.js";
 import { clamp } from "./utils.js";
 
@@ -57,6 +57,13 @@ function getMeshArtBounds(token, baseBounds) {
   const left = x - finiteNumber(mesh.anchor?.x, 0.5) * width;
   const top = y - finiteNumber(mesh.anchor?.y, 0.5) * height;
   return { x: Math.min(left, left + width), y: Math.min(top, top + height), width: Math.abs(width), height: Math.abs(height) };
+}
+
+export function getTokenArtBounds(token) {
+  const bounds = getMeshArtBounds(token, getBaseTokenBounds(token));
+  if (!bounds) return null;
+  const position = getObjectPosition(token);
+  return { ...bounds, x: bounds.x + position.x, y: bounds.y + position.y };
 }
 
 function getShapeBounds(shape) {

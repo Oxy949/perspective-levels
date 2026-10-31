@@ -1,7 +1,13 @@
 import { MODULE_ID } from "./constants.js";
-import { getLevelConfig, isPerspectiveDistanceEnabled } from "./config.js";
+import { getRuntimeLevelConfig as getLevelConfig, isPerspectiveDistanceEnabled } from "./config.js";
 import { applyPerspectiveMeasurement } from "./measurement.js";
 import { wrapPrototypeMethod } from "./foundry-helpers.js";
+
+let nativeMeasurementDepth = 0;
+export function withNativeGridMeasurements(callback) {
+  nativeMeasurementDepth++;
+  try { return callback(); } finally { nativeMeasurementDepth--; }
+}
 
 export function installPerspectiveMeasurementPatch() {
   const proto = globalThis.foundry?.grid?.BaseGrid?.prototype;
@@ -12,7 +18,7 @@ export function installPerspectiveMeasurementPatch() {
     const result = original.apply(this, args);
     try {
       const [waypoints, options = {}] = args;
-      if (options?._perspectiveLevelsBypass || result?._perspectiveLevels) return result;
+      if (nativeMeasurementDepth || options?._perspectiveLevelsBypass || result?._perspectiveLevels) return result;
 
       const config = getLevelConfig();
       if (!globalThis.canvas?.ready || !isPerspectiveDistanceEnabled(config)) return result;

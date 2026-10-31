@@ -1,14 +1,17 @@
 import { MODULE_ID } from "./constants.js";
-import { getLevelConfig } from "./config.js";
+import { getRuntimeLevelConfig as getLevelConfig } from "./config.js";
 import { getSceneGridDistance, getSceneRect } from "./scene.js";
-import { getPerspectiveCellScreenHeightAtRow, getPerspectiveGridModel, scaleForPerspectiveToken, screenPointToElevationGroundPoint, screenPointToPerspectiveGrid } from "./projection.js";
+import { getPerspectiveCellScreenHeightAtRow, getCachedPerspectiveGridModel as getPerspectiveGridModel, scaleForPerspectiveToken, screenPointToElevationGroundPoint, screenPointToPerspectiveGrid } from "./projection.js";
 import { positionTokenPerspectiveFrameInfo, resetTokenPerspectiveFrameInfo } from "./token-hit-testing.js";
 import { clamp } from "./utils.js";
 import { getTokenArtMultiplier } from "./token-art.js";
+import { buildTokenPreviewIndex, getIndexedTokenPreviews } from "./token-previews.js";
+import { clearTokenOutline, updateTokenOutline, withTokenVisualsSuspended } from "./token-visuals.js";
 
 const ORIGINAL_TOKEN_STATE = new WeakMap();
 const TOKEN_BASE_SCALE_BY_DOCUMENT = new Map();
 const TOKEN_BASE_RETRY_COUNT = new WeakMap();
+const TOKEN_BASE_RETRIES = new Map();
 const TOKEN_SHADOW_PREVIEWS = new WeakMap();
 const TOKEN_FLIGHT_SHADOWS = new WeakMap();
 const ENDED_TOKEN_SHADOW_PREVIEWS = new WeakSet();
@@ -20,7 +23,7 @@ const FLIGHT_SHADOW_COLOR = 0x000000;
 let PERSPECTIVE_SORT_RAF = null;
 let PERSPECTIVE_SORT_PERSIST_TIMEOUT = null;
 let PERSPECTIVE_SORT_PERSIST_REQUESTED = false;
-let PERSPECTIVE_SORT_PERSISTING = false;
+let PERSPECTIVE_SORT_PERSISTING = null;
 let PERSPECTIVE_SORT_PERSIST_AGAIN = false;
 let LAST_LOCAL_SORT_SIGNATURE = "";
 let LAST_PERSISTED_SORT_SIGNATURE = "";
@@ -215,18 +218,32 @@ function calculateFallbackBaseScale(mesh) {
 }
 
 function scheduleBaseScaleRetry(token) {
+  if (TOKEN_BASE_RETRIES.has(token) || !globalThis.canvas?.ready) return;
   const count = TOKEN_BASE_RETRY_COUNT.get(token) ?? 0;
   if (count >= 5) return;
   TOKEN_BASE_RETRY_COUNT.set(token, count + 1);
 
   const raf = globalThis.requestAnimationFrame ?? ((fn) => globalThis.setTimeout(fn, 16));
-  raf(() => {
+  const retry = { scene: globalThis.canvas.scene };
+  TOKEN_BASE_RETRIES.set(token, retry);
+  retry.id = raf(() => {
+    if (TOKEN_BASE_RETRIES.get(token) !== retry) return;
+    TOKEN_BASE_RETRIES.delete(token);
     try {
-      if (!token?.destroyed) applyPerspectiveToToken(token);
+      if (!token?.destroyed && globalThis.canvas?.ready && retry.scene === globalThis.canvas.scene
+        && (!token.document?.parent || token.document.parent === retry.scene)) applyPerspectiveToToken(token);
     } catch (err) {
       console.warn(`${MODULE_ID} | Failed to retry token perspective base scale`, err);
     }
   });
+}
+
+function cancelBaseScaleRetry(token) {
+  const retry = TOKEN_BASE_RETRIES.get(token);
+  if (!retry) return;
+  TOKEN_BASE_RETRIES.delete(token);
+  const caf = globalThis.cancelAnimationFrame ?? globalThis.clearTimeout;
+  try { caf(retry.id); } catch (_err) { /* noop */ }
 }
 
 function getCurrentUser() {
@@ -543,6 +560,12 @@ function refreshTokenPerspectiveFrame(token, config = getLevelConfig(), { force 
 }
 
 export function removePerspectiveFromToken(token) {
+  return withTokenVisualsSuspended(token, () => removeTokenPerspective(token));
+}
+
+function removeTokenPerspective(token) {
+  clearTokenOutline(token);
+  cancelBaseScaleRetry(token);
   const sortKey = getTokenSortCacheKey(token);
   if (sortKey) PERSPECTIVE_SORT_CACHE.delete(sortKey);
   PERSPECTIVE_SORT_DIRTY_TOKENS.delete(token);
@@ -562,6 +585,7 @@ export function removePerspectiveFromToken(token) {
     delete token._perspectiveLevelsBaseFrameBounds;
     refreshTokenPerspectiveFrame(token, getLevelConfig(), { force: true });
     resetTokenPerspectiveFrameInfo(token);
+    clearTokenOutline(token);
     return;
   }
 
@@ -580,6 +604,7 @@ export function removePerspectiveFromToken(token) {
     refreshTokenPerspectiveFrame(token, getLevelConfig(), { force: true });
     resetTokenPerspectiveFrameInfo(token);
   } finally {
+    clearTokenOutline(token);
     ORIGINAL_TOKEN_STATE.delete(token);
     const documentKey = getTokenDocumentKey(token);
     if (documentKey) TOKEN_BASE_SCALE_BY_DOCUMENT.delete(documentKey);
@@ -772,67 +797,16 @@ function tokenBelongsToActiveLevel(token) {
   return String(documentLevel) === String(activeLevelId);
 }
 
-function addTokenSortCandidate(value, token, set, seen = new Set()) {
-  if (!value || typeof value !== "object") return;
-  if (seen.has(value)) return;
-  seen.add(value);
-
-  if (isTokenObject(value)) {
-    const sameOriginal = value === token || value?._original === token;
-    const sameDocument = value?.document?.id && value.document.id === token?.document?.id;
-    const sameSource = value?.sourceId && token?.sourceId && value.sourceId === token.sourceId;
-    if (sameOriginal || sameDocument || sameSource) set.add(value);
-    return;
-  }
-
-  if (Array.isArray(value) || value instanceof Set) {
-    for (const entry of value) addTokenSortCandidate(entry, token, set, seen);
-    return;
-  }
-
-  if (value instanceof Map) {
-    for (const entry of value.values()) addTokenSortCandidate(entry, token, set, seen);
-    return;
-  }
-
-  for (const key of ["children", "placeables", "objects"]) {
-    const children = value?.[key];
-    if (Array.isArray(children)) {
-      for (const child of children) addTokenSortCandidate(child, token, set, seen);
-    }
-  }
-}
-
-function getTokenSortProxy(token) {
-  const candidates = new Set([token]);
-  const layer = token?.layer ?? globalThis.canvas?.tokens;
-
-  for (const key of ["_preview", "preview", "_dragPreview", "_movementPreview", "_previewObject"]) {
-    try { addTokenSortCandidate(token?.[key], token, candidates); }
-    catch (_err) { /* private access may throw in some builds */ }
-  }
-
-  for (const source of [
-    layer?.preview,
-    layer?._preview,
-    layer?.previews,
-    layer?._previews,
-    layer?.objects?.preview,
-    globalThis.canvas?.tokens?.preview,
-    globalThis.canvas?.tokens?._preview
-  ]) {
-    addTokenSortCandidate(source, token, candidates);
-  }
-
+function getTokenSortProxy(token, previewIndex) {
   // Если есть drag-preview, у него позиция актуальнее, чем у исходного токена.
-  for (const candidate of candidates) {
+  for (const candidate of getIndexedTokenPreviews(token, previewIndex)) {
     if (candidate !== token && !candidate.destroyed) return candidate;
   }
   return token;
 }
 
-function getPerspectiveTokenDepthSortValue(token, config, rect = getSceneRect(), model = null) {
-  const proxy = getTokenSortProxy(token);
+function getPerspectiveTokenDepthSortValue(token, config, rect, model, previewIndex) {
+  const proxy = getTokenSortProxy(token, previewIndex);
   const coords = screenPointToPerspectiveGrid(getTokenVisualBottomPoint(proxy, rect), config, rect, model);
 
   const depthCells = Number.isFinite(Number(coords?.j)) ? Number(coords.j) : 0;
@@ -862,14 +836,14 @@ function buildPerspectiveSortEntriesFromCache() {
   return { entries, signature };
 }
 
-function rebuildPerspectiveSortCache(tokens, config, rect = getSceneRect(), model = null) {
+function rebuildPerspectiveSortCache(tokens, config, rect, model, previewIndex) {
   PERSPECTIVE_SORT_CACHE.clear();
   for (const token of tokens) {
     const key = getTokenSortCacheKey(token);
     if (!key) continue;
     PERSPECTIVE_SORT_CACHE.set(key, {
       token,
-      depth: getPerspectiveTokenDepthSortValue(token, config, rect, model)
+      depth: getPerspectiveTokenDepthSortValue(token, config, rect, model, previewIndex)
     });
   }
 }
@@ -892,7 +866,7 @@ function buildPerspectiveSortSnapshot(config = getLevelConfig()) {
 
   const rect = getSceneRect();
   const model = getPerspectiveGridModel(config, rect);
-  rebuildPerspectiveSortCache(tokens, config, rect, model);
+  rebuildPerspectiveSortCache(tokens, config, rect, model, buildTokenPreviewIndex(tokens, isTokenObject));
   return buildPerspectiveSortEntriesFromCache();
 }
 
@@ -905,8 +879,9 @@ function buildIncrementalPerspectiveSortSnapshot(config, dirtyTokens) {
 
   const rect = getSceneRect();
   const model = getPerspectiveGridModel(config, rect);
+  const previewIndex = buildTokenPreviewIndex(tokens, isTokenObject);
   if (!isPerspectiveSortCacheCurrent(tokens)) {
-    rebuildPerspectiveSortCache(tokens, config, rect, model);
+    rebuildPerspectiveSortCache(tokens, config, rect, model, previewIndex);
     return buildPerspectiveSortEntriesFromCache();
   }
 
@@ -923,7 +898,7 @@ function buildIncrementalPerspectiveSortSnapshot(config, dirtyTokens) {
 
     PERSPECTIVE_SORT_CACHE.set(key, {
       token,
-      depth: getPerspectiveTokenDepthSortValue(token, config, rect, model)
+      depth: getPerspectiveTokenDepthSortValue(token, config, rect, model, previewIndex)
     });
   }
 
@@ -1030,9 +1005,10 @@ async function persistPerspectiveSortSnapshot(snapshot) {
     return;
   }
 
-  PERSPECTIVE_SORT_PERSISTING = true;
+  const operation = { scene: globalThis.canvas?.scene };
+  PERSPECTIVE_SORT_PERSISTING = operation;
   try {
-    const scene = globalThis.canvas?.scene;
+    const scene = operation.scene;
     if (!scene?.updateEmbeddedDocuments) return;
 
     const updates = snapshot.entries.map(entry => ({ _id: entry.token.document.id, sort: entry.sort }));
@@ -1041,11 +1017,15 @@ async function persistPerspectiveSortSnapshot(snapshot) {
       animate: false,
       _perspectiveLevelsSort: true
     });
-    LAST_PERSISTED_SORT_SIGNATURE = snapshot.signature;
+    if (PERSPECTIVE_SORT_PERSISTING === operation && scene === globalThis.canvas?.scene) {
+      LAST_PERSISTED_SORT_SIGNATURE = snapshot.signature;
+    }
   } catch (err) {
     console.warn(`${MODULE_ID} | Failed to persist perspective token sort`, err);
   } finally {
-    PERSPECTIVE_SORT_PERSISTING = false;
+    // A teardown/new canvas starts an independent persistence generation.
+    if (PERSPECTIVE_SORT_PERSISTING !== operation) return;
+    PERSPECTIVE_SORT_PERSISTING = null;
     if (PERSPECTIVE_SORT_PERSIST_AGAIN) {
       PERSPECTIVE_SORT_PERSIST_AGAIN = false;
       schedulePerspectiveSort({ persist: true });
@@ -1095,6 +1075,7 @@ export function schedulePerspectiveSort({ persist = false, debounce = false, tok
 }
 
 export function clearPerspectiveSortState() {
+  PERSPECTIVE_SORT_PERSISTING = null;
   LAST_LOCAL_SORT_SIGNATURE = "";
   LAST_PERSISTED_SORT_SIGNATURE = "";
   PERSPECTIVE_SORT_PERSIST_REQUESTED = false;
@@ -1122,6 +1103,8 @@ export function applyPerspectiveToToken(token, { scheduleSort = true } = {}) {
     return;
   }
 
+  updateTokenOutline(token, config);
+
   const mesh = token.mesh;
 
   if (!mesh || mesh.destroyed) {
@@ -1143,7 +1126,10 @@ export function applyPerspectiveToToken(token, { scheduleSort = true } = {}) {
 
   const rect = getSceneRect();
   const state = getTokenState(token, mesh, rect);
-  if (state.baseSource === "document") TOKEN_BASE_RETRY_COUNT.delete(token);
+  if (state.baseSource === "document") {
+    TOKEN_BASE_RETRY_COUNT.delete(token);
+    cancelBaseScaleRetry(token);
+  }
   else scheduleBaseScaleRetry(token);
 
   const tokenScaleMultiplier = clamp(config.tokenScaleMultiplier ?? 1, 0.05, 8);
@@ -1176,5 +1162,9 @@ export function refreshTokens() {
 }
 
 export function clearTokenScaleState() {
+  for (const token of TOKEN_BASE_RETRIES.keys()) {
+    cancelBaseScaleRetry(token);
+    TOKEN_BASE_RETRY_COUNT.delete(token);
+  }
   TOKEN_BASE_SCALE_BY_DOCUMENT.clear();
 }

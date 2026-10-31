@@ -113,7 +113,7 @@ export class PerspectiveCalibrator {
   }
 
   reset() {
-    this.config = normalizeConfig({ enabled: true });
+    this.config = normalizeConfig({ enabled: true, grid: this.config?.grid ?? true });
     this._applyConfigChange({ autosave: true, syncPanel: true });
   }
 

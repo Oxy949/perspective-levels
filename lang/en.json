@@ -3,6 +3,7 @@
   "PERSPECTIVE_LEVELS.Enable": "Use perspective on this level",
   "PERSPECTIVE_LEVELS.Grid": "Show perspective grid",
   "PERSPECTIVE_LEVELS.TokenScaling": "Scale tokens",
+  "PERSPECTIVE_LEVELS.SelectionOutline": "Outline selected token art in disposition colors",
   "PERSPECTIVE_LEVELS.Distance": "Measure distances on the perspective grid",
   "PERSPECTIVE_LEVELS.OpenCalibrator": "Open Anchor Calibration",
   "PERSPECTIVE_LEVELS.Calibrator": "Perspective Calibration",

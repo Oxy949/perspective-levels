@@ -1,5 +1,5 @@
 import { MODULE_ID } from "./constants.js";
-import { getLevelConfig, isPerspectiveDistanceEnabled, isPerspectiveEnabled } from "./config.js";
+import { getRuntimeLevelConfig as getLevelConfig, isPerspectiveDistanceEnabled, isPerspectiveEnabled } from "./config.js";
 import { applyPerspectiveMeasurement } from "./measurement.js";
 import { getTokenClass, wrapPrototypeMethod } from "./foundry-helpers.js";
 import { applyOrSchedulePerspectiveUpdate, schedulePerspectiveUpdate } from "./token-update-queue.js";
