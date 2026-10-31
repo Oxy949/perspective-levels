@@ -2,6 +2,7 @@ import { clearLevelConfigOverride, getLevelConfig, normalizeConfig, setLevelConf
 import { anchorToPoint, getPerspectiveGridModel, pointToAnchor } from "./projection.js";
 import { getSceneRect } from "./scene.js";
 import { clamp, i18n, i18nFormat } from "./utils.js";
+import { ANCHOR_SCALE_LIMITS } from "./constants.js";
 
 function normalizeRotation(value) {
   const n = Number(value) || 0;
@@ -12,13 +13,24 @@ function normalizeRotation(value) {
 const AUTO_SAVE_DEBOUNCE_MS = 350;
 const EDGE_HIT_PADDING = 72;
 
-function getCalibratorHitArea(rect = getSceneRect()) {
+function getCalibratorHitArea(rect = getSceneRect(), anchors = {}) {
   const padding = Math.max(EDGE_HIT_PADDING, rect.gridSize * 0.75);
+  let left = rect.x, top = rect.y, right = rect.x + rect.width, bottom = rect.y + rect.height;
+  // A container hit area clips interaction with its children. Include both
+  // anchor lines so anchors outside the scene remain selectable after loading.
+  for (const anchor of Object.values(anchors)) {
+    const hit = anchor.hitArea;
+    if (!hit) continue;
+    left = Math.min(left, anchor.position.x + hit.x);
+    top = Math.min(top, anchor.position.y + hit.y);
+    right = Math.max(right, anchor.position.x + hit.x + hit.width);
+    bottom = Math.max(bottom, anchor.position.y + hit.y + hit.height);
+  }
   return new PIXI.Rectangle(
-    rect.x - padding,
-    rect.y - padding,
-    rect.width + padding * 2,
-    rect.height + padding * 2
+    left - padding,
+    top - padding,
+    right - left + padding * 2,
+    bottom - top + padding * 2
   );
 }
 
@@ -246,9 +258,9 @@ export class PerspectiveCalibrator {
     div.innerHTML = `
       <header>${i18n("PERSPECTIVE_LEVELS.Calibrator")}</header>
       <p class="hint">${i18n("PERSPECTIVE_LEVELS.CalibratorHint")}</p>
-      <label>${i18n("PERSPECTIVE_LEVELS.FarAnchor")} ${i18n("PERSPECTIVE_LEVELS.Scale")} <input type="range" data-pl-scale="far" min="0.05" max="4" step="0.01"></label>
+      <label>${i18n("PERSPECTIVE_LEVELS.FarAnchor")} ${i18n("PERSPECTIVE_LEVELS.Scale")} <input type="range" data-pl-scale="far" min="${ANCHOR_SCALE_LIMITS.min}" max="${ANCHOR_SCALE_LIMITS.max}" step="${ANCHOR_SCALE_LIMITS.step}"></label>
       <label>${i18n("PERSPECTIVE_LEVELS.FarAnchor")} ${i18n("PERSPECTIVE_LEVELS.Rotation")} <input type="range" data-pl-rotation="far" min="-180" max="180" step="1"></label>
-      <label>${i18n("PERSPECTIVE_LEVELS.NearAnchor")} ${i18n("PERSPECTIVE_LEVELS.Scale")} <input type="range" data-pl-scale="near" min="0.05" max="4" step="0.01"></label>
+      <label>${i18n("PERSPECTIVE_LEVELS.NearAnchor")} ${i18n("PERSPECTIVE_LEVELS.Scale")} <input type="range" data-pl-scale="near" min="${ANCHOR_SCALE_LIMITS.min}" max="${ANCHOR_SCALE_LIMITS.max}" step="${ANCHOR_SCALE_LIMITS.step}"></label>
       <label>${i18n("PERSPECTIVE_LEVELS.NearAnchor")} ${i18n("PERSPECTIVE_LEVELS.Rotation")} <input type="range" data-pl-rotation="near" min="-180" max="180" step="1"></label>
       <label>${i18n("PERSPECTIVE_LEVELS.GridCurve")} <input type="range" data-pl-curve min="0.4" max="4" step="0.01"></label>
       <label>${i18n("PERSPECTIVE_LEVELS.GridCellScale")} <input type="range" data-pl-grid-scale min="0.1" max="8" step="0.05"></label>
@@ -267,7 +279,7 @@ export class PerspectiveCalibrator {
     div.querySelectorAll("input[data-pl-scale]").forEach(input => {
       input.addEventListener("input", event => {
         const key = event.currentTarget.dataset.plScale;
-        this.config[key].scale = clamp(event.currentTarget.value, 0.05, 4);
+        this.config[key].scale = clamp(event.currentTarget.value, ANCHOR_SCALE_LIMITS.min, ANCHOR_SCALE_LIMITS.max);
         this._applyConfigChange({ autosave: true });
       });
     });
@@ -335,7 +347,6 @@ export class PerspectiveCalibrator {
     if (!this.container || !this.config) return;
 
     const rect = getSceneRect();
-    this.container.hitArea = getCalibratorHitArea(rect);
     const model = getPerspectiveGridModel(this.config, rect);
 
     for (const key of ["far", "near"]) {
@@ -386,6 +397,7 @@ export class PerspectiveCalibrator {
       anchor.label.y = placeLabelAbove ? -handleLength - labelGap : handleLength + labelGap;
     }
 
+    this.container.hitArea = getCalibratorHitArea(rect, this.anchors);
     this.drawGrid();
   }
 }

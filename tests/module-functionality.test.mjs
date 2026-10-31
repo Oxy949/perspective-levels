@@ -63,8 +63,90 @@ function gridPoint(i, j, elevation = 0) {
 }
 function diagonalMode(mode) { canvas.scene.grid.diagonals = canvas.grid.diagonals = mode; }
 
+test("anchors outside every scene edge survive coordinate conversion and configuration reload", () => {
+  for (const anchor of [{ x: -0.4, y: -0.6 }, { x: 1.7, y: 2.2 }]) {
+    const screen = anchorToPoint(anchor, rect), restored = pointToAnchor(screen, rect);
+    closeTo(restored.x, anchor.x); closeTo(restored.y, anchor.y);
+  }
+  const outside = normalizeConfig({ far: { x: -0.4, y: -0.6, scale: 0.01 }, near: { x: 1.7, y: 2.2, scale: 16 } });
+  assert.equal(outside.far.x, -0.4); assert.equal(outside.far.y, -0.6); assert.equal(outside.far.scale, 0.01);
+  assert.equal(outside.near.x, 1.7); assert.equal(outside.near.y, 2.2); assert.equal(outside.near.scale, 16);
+  assert.deepEqual(normalizeConfig(JSON.parse(JSON.stringify(outside))), outside);
+  const invalid = normalizeConfig({ far: { x: Infinity, y: NaN }, near: { x: '-Infinity', y: 'invalid' } });
+  for (const anchor of [invalid.far, invalid.near]) assert.ok(Number.isFinite(anchor.x) && Number.isFinite(anchor.y));
+});
+
+test("projection and flight remain reversible with off-scene anchors and expanded scale extremes", () => {
+  for (const [farScale, nearScale] of [[0.01, 16], [16, 0.01], [0.01, 0.01], [16, 16]]) {
+    for (const curve of [0.4, 1, 1.45, 4]) {
+      const cfg = normalizeConfig({ curve, far: { x: -0.25, y: -0.5, scale: farScale },
+        near: { x: 1.25, y: 1.5, scale: nearScale } });
+      const model = getPerspectiveGridModel(cfg, rect);
+      assert.equal(model.columns, getPerspectiveGridModel(config, rect).columns);
+      for (const i of [0, model.columns / 2, model.columns]) for (const j of [0, 2, 6, 12]) {
+        const screen = perspectiveGridModelToScreen(model, i, j);
+        const grid = screenPointToPerspectiveGrid(screen, cfg, rect);
+        closeTo(grid.i, i, 0.001); closeTo(grid.j, j, 0.001);
+        const elevated = perspectiveGroundPointToElevatedScreen({ ...screen, elevation: 10 }, cfg, rect);
+        const ground = screenPointToElevationGroundPoint({ ...elevated, elevation: 10 }, cfg, rect);
+        closeTo(ground.x, screen.x, 0.01); closeTo(ground.y, screen.y, 0.01);
+      }
+    }
+  }
+});
+
+test("dragging anchors outside the scene saves and reopens with selectable lines and working rotation", async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let saved = config;
+  canvas.level.getFlag = () => saved;
+  canvas.level.setFlag = async (_, __, value) => { saved = structuredClone(value); };
+  const c = new PerspectiveCalibrator(); c._createPanel = () => {};
+  c.open();
+  for (const [key, coordinates] of [['far', { x: -0.5, y: -0.4 }], ['near', { x: 1.4, y: 1.5 }]]) {
+    const destination = anchorToPoint(coordinates, rect);
+    c.dragging = key;
+    c._onPointerMove({ getLocalPosition: () => destination }); c._stopDrag();
+    assert.equal(c.config[key].x, coordinates.x); assert.equal(c.config[key].y, coordinates.y);
+    assert.ok(c.container.hitArea.contains(destination.x, destination.y));
+  }
+  await c.save({ notify: false }); c.close(false);
+  await c._autoSavePromise;
+  c.open();
+  for (const key of ['far', 'near']) {
+    const anchor = c.anchors[key], hit = anchor.hitArea;
+    assert.ok(c.container.hitArea.contains(anchor.position.x + hit.x, anchor.position.y + hit.y));
+    assert.ok(c.container.hitArea.contains(anchor.position.x + hit.x + hit.width, anchor.position.y + hit.y + hit.height));
+  }
+  c._onWheel({ deltaY: 100, getLocalPosition: () => c.anchors.far.position });
+  assert.equal(c.config.far.rotation, 5);
+  assert.equal(c.config.far.x, -0.5); assert.equal(c.config.near.y, 1.5);
+  c.close(false); await c._autoSavePromise;
+});
+
+test("extreme anchor scales do not add overlay subdivisions or camera redraw work", () => {
+  const overlay = new PerspectiveGridOverlay(); overlay.draw();
+  const count = overlay.grid.lines.length;
+  config.far = { ...config.far, x: -2, y: -1, scale: 0.01 };
+  config.near = { ...config.near, x: 3, y: 2, scale: 16 };
+  overlay.draw(); assert.equal(overlay.grid.lines.length, count);
+  const geometry = overlay.grid.lines;
+  for (let i = 0; i < 100; i++) overlay.draw();
+  assert.equal(overlay.grid.lines, geometry);
+});
+
+test("copied calibration preserves outside coordinates and both expanded anchor scale limits", () => {
+  const values = { 'far.x': -1.25, 'far.y': -0.5, 'near.x': 2.5, 'near.y': 1.75, 'far.scale': 0.01, 'near.scale': 16 };
+  const inputs = new Map(Object.keys(values).map(key => [key, { value: '', dispatchEvent() {} }]));
+  const form = { querySelector: selector => inputs.get(selector.match(/perspective\.(.*)"\]/)?.[1]) };
+  assert.equal(applyGridSettings(form, values), true);
+  assert.deepEqual(extractGridSettings(form), values);
+  applyGridSettings(form, { 'far.scale': -1, 'near.scale': 100 });
+  assert.equal(Number(inputs.get('far.scale').value), 0.01);
+  assert.equal(Number(inputs.get('near.scale').value), 16);
+});
+
 test("config normalization is stable, migrates old fields and never leaves coincident anchors", () => {
-  for (const y of [0, 0.5, 0.99, 1]) {
+  for (const y of [-2, 0, 0.5, 0.99, 1, 3]) {
     const value = normalizeConfig({ enabled: "true", grid: "false", tokenVerticalAlign: 0.2, far: { y }, near: { y } });
     assert.equal(value.enabled, true); assert.equal(value.grid, false); assert.equal(value.tokenArtVerticalAlign, 0.2);
     assert.ok(Math.abs(value.far.y - value.near.y) >= 0.02);

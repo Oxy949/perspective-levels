@@ -29,7 +29,7 @@
   "PERSPECTIVE_LEVELS.SelectLevelFirst": "Select this level on the scene first, then open calibration.",
   "PERSPECTIVE_LEVELS.OpenSceneAndSelectLevel": "Open a scene and select the level you want to configure.",
   "PERSPECTIVE_LEVELS.SavedToLevel": "Perspective Levels: settings saved to level \"{level}\".",
-  "PERSPECTIVE_LEVELS.CalibratorHint": "Drag the two line anchors on the scene. The mouse wheel over a line rotates it; Shift+wheel makes fine adjustments. These lines define the ground plane.",
+  "PERSPECTIVE_LEVELS.CalibratorHint": "Drag the two line anchors, including outside the scene boundaries. The mouse wheel over a line rotates it; Shift+wheel makes fine adjustments. These lines define the ground plane.",
   "PERSPECTIVE_LEVELS.GridCurve": "Grid Curvature",
   "PERSPECTIVE_LEVELS.GridCellScale": "Grid Cell Scale",
   "PERSPECTIVE_LEVELS.SceneDepthCells": "Scene Depth, Cells",

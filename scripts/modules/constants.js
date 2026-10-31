@@ -1,5 +1,6 @@
 export const MODULE_ID = "perspective-levels";
 export const FLAG = "perspective";
+export const ANCHOR_SCALE_LIMITS = Object.freeze({ min: 0.01, max: 16, step: 0.01 });
 
 export const DEFAULT_CONFIG = Object.freeze({
   enabled: false,

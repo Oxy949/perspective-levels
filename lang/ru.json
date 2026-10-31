@@ -29,7 +29,7 @@
   "PERSPECTIVE_LEVELS.SelectLevelFirst": "Сначала выбери этот уровень на сцене, затем открой калибровку.",
   "PERSPECTIVE_LEVELS.OpenSceneAndSelectLevel": "Открой сцену и выбери уровень, который нужно настроить.",
   "PERSPECTIVE_LEVELS.SavedToLevel": "Perspective Levels: настройки сохранены на уровень «{level}».",
-  "PERSPECTIVE_LEVELS.CalibratorHint": "Перетащи две линии-якоря на сцене. Колесико мыши над линией вращает её, Shift+колесико - точная доводка. Эти линии задают плоскость земли.",
+  "PERSPECTIVE_LEVELS.CalibratorHint": "Перетаскивай две линии-якоря, в том числе за границы сцены. Колесико мыши над линией вращает её, Shift+колесико - точная доводка. Эти линии задают плоскость земли.",
   "PERSPECTIVE_LEVELS.GridCurve": "Кривизна сетки",
   "PERSPECTIVE_LEVELS.GridCellScale": "Масштаб клетки сетки",
   "PERSPECTIVE_LEVELS.SceneDepthCells": "Глубина сцены, клеток",

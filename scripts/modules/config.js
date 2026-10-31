@@ -1,4 +1,4 @@
-import { DEFAULT_CONFIG, FLAG, MODULE_ID } from "./constants.js";
+import { ANCHOR_SCALE_LIMITS, DEFAULT_CONFIG, FLAG, MODULE_ID } from "./constants.js";
 import { asBool, clamp, normalizeHexColor } from "./utils.js";
 
 let activeLevelConfigOverride = null;
@@ -41,6 +41,11 @@ function hasOwn(object, key) {
   return Object.prototype.hasOwnProperty.call(object ?? {}, key);
 }
 
+function normalizeAnchorCoordinate(value, fallback) {
+  const number = Number(value);
+  return roundNumber(Number.isFinite(number) ? number : fallback);
+}
+
 export function normalizeConfig(config = {}) {
   const base = cloneDefaultConfig();
   const merged = mergeConfig(base, config ?? {});
@@ -68,15 +73,15 @@ export function normalizeConfig(config = {}) {
   delete merged.tokenVerticalAlign;
   merged.curve = roundNumber(clamp(merged.curve, 0.4, 4), 4);
   merged.far = {
-    x: roundNumber(clamp(merged.far?.x, 0, 1), 4),
-    y: roundNumber(clamp(merged.far?.y, 0, 1), 4),
-    scale: roundNumber(clamp(merged.far?.scale, 0.05, 4), 4),
+    x: normalizeAnchorCoordinate(merged.far?.x, DEFAULT_CONFIG.far.x),
+    y: normalizeAnchorCoordinate(merged.far?.y, DEFAULT_CONFIG.far.y),
+    scale: roundNumber(clamp(merged.far?.scale, ANCHOR_SCALE_LIMITS.min, ANCHOR_SCALE_LIMITS.max), 4),
     rotation: roundNumber(normalizeRotationDegrees(merged.far?.rotation), 4)
   };
   merged.near = {
-    x: roundNumber(clamp(merged.near?.x, 0, 1), 4),
-    y: roundNumber(clamp(merged.near?.y, 0, 1), 4),
-    scale: roundNumber(clamp(merged.near?.scale, 0.05, 4), 4),
+    x: normalizeAnchorCoordinate(merged.near?.x, DEFAULT_CONFIG.near.x),
+    y: normalizeAnchorCoordinate(merged.near?.y, DEFAULT_CONFIG.near.y),
+    scale: roundNumber(clamp(merged.near?.scale, ANCHOR_SCALE_LIMITS.min, ANCHOR_SCALE_LIMITS.max), 4),
     rotation: roundNumber(normalizeRotationDegrees(merged.near?.rotation), 4)
   };
 

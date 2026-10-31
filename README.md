@@ -26,7 +26,7 @@ A Foundry VTT 14 module that adds visual perspective to individual Scene Levels 
 3. Open the level settings (`LevelConfig`).
 4. In the **Level Perspective** section, enable **Use perspective on this level**.
 5. Click **Open Anchor Calibration** or the icon button in the token tools.
-6. Drag the far and near line anchors. Rotate a line with the mouse wheel while hovering over it; hold Shift while scrolling for fine adjustment. Their scale is controlled by the sliders.
+6. Drag the far and near line anchors, including outside the scene boundaries. Rotate a line with the mouse wheel while hovering over it; hold Shift while scrolling for fine adjustment. Their scale sliders range from 0.01 to 16. Anchor X/Y coordinates in the level settings may be negative or greater than 1; 0 and 1 mark the scene edges.
 7. Click **Save to Level**.
 
 When **Ginzzzu's Portraits & NPC Dock** (`ginzzzu-portraits`) is active, each actor's **Portrait Height Multiplier**, multiplied by their active **Emotion Height Multiplier**, also scales their token art proportionally. Switching or clearing emotions updates the height of both the token and its drag preview, including when the portrait module synchronizes a new token image with a native fade. Texture dimensions are recalculated as the new art loads. The token's ground footprint and shadow keep their size; without the module or a configured multiplier, the multiplier is 1.

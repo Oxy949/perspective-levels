@@ -1,4 +1,4 @@
-import { FLAG, MODULE_ID } from "./constants.js";
+import { ANCHOR_SCALE_LIMITS, FLAG, MODULE_ID } from "./constants.js";
 import { getLevelConfig, normalizeConfig } from "./config.js";
 import { i18n } from "./utils.js";
 
@@ -268,13 +268,13 @@ export function injectLevelConfig(app, html, { openCalibrator } = {}) {
         <div class="perspective-levels-section">
           <div class="perspective-levels-section-title">${i18n("PERSPECTIVE_LEVELS.PerspectiveAnchors")}</div>
           <div class="perspective-levels-fields-grid perspective-levels-anchor-grid">
-            <label>Far X <input type="number" name="${fieldName("far.x")}" value="${formatNumber(cfg.far.x)}" min="0" max="1" step="any"></label>
-            <label>Far Y <input type="number" name="${fieldName("far.y")}" value="${formatNumber(cfg.far.y)}" min="0" max="1" step="any"></label>
-            <label>${i18n("PERSPECTIVE_LEVELS.FarAnchor")} ${i18n("PERSPECTIVE_LEVELS.Scale")} <input type="number" name="${fieldName("far.scale")}" value="${formatNumber(cfg.far.scale)}" min="0.05" max="4" step="any"></label>
+            <label>Far X <input type="number" name="${fieldName("far.x")}" value="${formatNumber(cfg.far.x)}" step="any"></label>
+            <label>Far Y <input type="number" name="${fieldName("far.y")}" value="${formatNumber(cfg.far.y)}" step="any"></label>
+            <label>${i18n("PERSPECTIVE_LEVELS.FarAnchor")} ${i18n("PERSPECTIVE_LEVELS.Scale")} <input type="number" name="${fieldName("far.scale")}" value="${formatNumber(cfg.far.scale)}" min="${ANCHOR_SCALE_LIMITS.min}" max="${ANCHOR_SCALE_LIMITS.max}" step="any"></label>
             <label>${i18n("PERSPECTIVE_LEVELS.FarAnchor")} ${i18n("PERSPECTIVE_LEVELS.Rotation")} <input type="number" name="${fieldName("far.rotation")}" value="${formatNumber(cfg.far.rotation ?? 0)}" min="-180" max="180" step="any"></label>
-            <label>Near X <input type="number" name="${fieldName("near.x")}" value="${formatNumber(cfg.near.x)}" min="0" max="1" step="any"></label>
-            <label>Near Y <input type="number" name="${fieldName("near.y")}" value="${formatNumber(cfg.near.y)}" min="0" max="1" step="any"></label>
-            <label>${i18n("PERSPECTIVE_LEVELS.NearAnchor")} ${i18n("PERSPECTIVE_LEVELS.Scale")} <input type="number" name="${fieldName("near.scale")}" value="${formatNumber(cfg.near.scale)}" min="0.05" max="4" step="any"></label>
+            <label>Near X <input type="number" name="${fieldName("near.x")}" value="${formatNumber(cfg.near.x)}" step="any"></label>
+            <label>Near Y <input type="number" name="${fieldName("near.y")}" value="${formatNumber(cfg.near.y)}" step="any"></label>
+            <label>${i18n("PERSPECTIVE_LEVELS.NearAnchor")} ${i18n("PERSPECTIVE_LEVELS.Scale")} <input type="number" name="${fieldName("near.scale")}" value="${formatNumber(cfg.near.scale)}" min="${ANCHOR_SCALE_LIMITS.min}" max="${ANCHOR_SCALE_LIMITS.max}" step="any"></label>
             <label>${i18n("PERSPECTIVE_LEVELS.NearAnchor")} ${i18n("PERSPECTIVE_LEVELS.Rotation")} <input type="number" name="${fieldName("near.rotation")}" value="${formatNumber(cfg.near.rotation ?? 0)}" min="-180" max="180" step="any"></label>
             <label>${i18n("PERSPECTIVE_LEVELS.Curve")} <input type="number" name="${fieldName("curve")}" value="${formatNumber(cfg.curve)}" min="0.4" max="4" step="any"></label>
           </div>

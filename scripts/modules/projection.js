@@ -31,8 +31,8 @@ export function anchorToPoint(anchor, rect = getSceneRect()) {
 
 export function pointToAnchor(point, rect = getSceneRect()) {
   return {
-    x: clamp((point.x - rect.x) / rect.width, 0, 1),
-    y: clamp((point.y - rect.y) / rect.height, 0, 1)
+    x: (point.x - rect.x) / rect.width,
+    y: (point.y - rect.y) / rect.height
   };
 }
 
