@@ -65,6 +65,11 @@ class Token {
       },
       update() { this.extraUpdates++; return Promise.resolve(); }
     };
+    this.document.getSize = function(data = this) { return { width: data.width * 100, height: data.height * 100 }; };
+    this.document.getMovementOrigin = function(data = {}) {
+      return { x: (data.x ?? this.x) + (data.width ?? this.width) * 50,
+        y: (data.y ?? this.y) + (data.height ?? this.height) * 50, elevation: data.elevation ?? this.elevation };
+    };
     this.w = width * 100;
     this.h = height * 100;
     this.position = new Point(x, y);
@@ -131,6 +136,16 @@ class Token {
   }
   _onDragEnd() {}
   _onDragStart() {}
+  constrainMovementPath(points, { fail = false } = {}) {
+    const kept = [];
+    for (const point of points) {
+      const origin = this.document.getMovementOrigin(point);
+      if (fail) throw new Error('native collision failure');
+      if (!canvas.dimensions.rect.contains(origin.x, origin.y)) return { points: kept, constrained: true };
+      kept.push(point);
+    }
+    return { points: kept, constrained: false };
+  }
 }
 
 globalThis.PIXI = { Graphics, Rectangle };
@@ -167,8 +182,8 @@ function startDrag(tokens) {
   return event;
 }
 
-function closeTo(actual, expected) {
-  assert.ok(Math.abs(actual - expected) < 0.00001, `Expected ${actual} to equal ${expected}`);
+function closeTo(actual, expected, tolerance = 0.00001) {
+  assert.ok(Math.abs(actual - expected) < tolerance, `Expected ${actual} to equal ${expected}`);
 }
 
 function artBounds(token) {
@@ -369,6 +384,24 @@ test("token drag snapping follows perspective cell coordinates at altitude", () 
   closeTo(coords.i, 5.5, 0.02); closeTo(coords.j, 6, 0.02);
 });
 
+test("native scene bounds accept a flyer above the canvas while its ground point remains inside", () => {
+  config = normalizeConfig({ enabled: true });
+  const token = new Token('a'), rect = { x: 0, y: 0, width: 2000, height: 1500, gridSize: 100 };
+  canvas.dimensions.rect = { contains: (x, y) => x >= 0 && x <= 2000 && y >= 0 && y <= 1500 };
+  const ground = perspectiveGridModelToScreen(getPerspectiveGridModel(config, rect), 10, 2);
+  const raised = perspectiveGroundPointToElevatedScreen({ ...ground, elevation: 50 }, config, rect);
+  const destination = { x: raised.x - 50, y: raised.y - 100, elevation: 50, width: 1, height: 1 };
+  assert.ok(destination.y < 0);
+  const nativeOrigin = token.document.getMovementOrigin, nativeContains = canvas.dimensions.rect.contains;
+  assert.equal(token.constrainMovementPath([destination]).constrained, false);
+  assert.equal(token.constrainMovementPath([destination, { ...destination, elevation: 0 }]).constrained, true);
+  assert.equal(canvas.dimensions.rect.contains(raised.x, raised.y), false);
+  assert.throws(() => token.constrainMovementPath([destination], { fail: true }), /native collision failure/);
+  assert.equal(token.document.getMovementOrigin, nativeOrigin); assert.equal(canvas.dimensions.rect.contains, nativeContains);
+  const outside = { ...destination, x: -5000 };
+  assert.equal(token.constrainMovementPath([outside]).constrained, true);
+});
+
 test("ordinary movement retains the preview elevation when Shift is released", () => {
   const token = new Token("a");
   const event = startDrag([token]);
@@ -482,6 +515,21 @@ test("sorting and elevation refresh settle without queuing an endless render loo
   assert.equal(frameCallbacks.length, 1);
   frameCallbacks.shift()();
   assert.equal(frameCallbacks.length, 0);
+});
+
+test("native Alt state refresh swaps the border for an outline and clears it on release", () => {
+  const previous = foundry.canvas.rendering;
+  try {
+    const filters = [];
+    foundry.canvas.rendering = { filters: { OutlineOverlayFilter: { create(uniforms) {
+      const filter = { uniforms, destroy() { this.destroyed = true; } }; filters.push(filter); return filter;
+    } } } };
+    const token = new Token('alt'); token.border = { renderable: true };
+    canvas.tokens.highlightObjects = true; token._refreshState();
+    assert.equal(filters.length, 1); assert.equal(token.border.renderable, false);
+    canvas.tokens.highlightObjects = false; token._refreshState();
+    assert.equal(token.border.renderable, true); assert.equal(filters[0].destroyed, true);
+  } finally { foundry.canvas.rendering = previous; }
 });
 
 test("hit bounds follow a mesh position refresh even when token position was refreshed first", () => {

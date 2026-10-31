@@ -4,6 +4,7 @@ import { applyPerspectiveMeasurement } from "./measurement.js";
 import { wrapPrototypeMethod } from "./foundry-helpers.js";
 
 let nativeMeasurementDepth = 0;
+export function isNativeGridMeasurement() { return nativeMeasurementDepth > 0; }
 export function withNativeGridMeasurements(callback) {
   nativeMeasurementDepth++;
   try { return callback(); } finally { nativeMeasurementDepth--; }

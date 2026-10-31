@@ -36,7 +36,9 @@ export function clearTokenOutline(token) {
 export function updateTokenOutline(token, config = getRuntimeLevelConfig()) {
   const mesh = token?.mesh;
   const Filter = globalThis.foundry?.canvas?.rendering?.filters?.OutlineOverlayFilter;
-  const active = !SUSPENDED_VISUALS.has(token) && config.enabled && config.selectionOutline && (token.controlled || token.hover)
+  const highlighted = token.layer?.highlightObjects ?? globalThis.canvas?.tokens?.highlightObjects;
+  const active = !SUSPENDED_VISUALS.has(token) && config.enabled && config.selectionOutline
+    && !token.document?.isSecret && (token.controlled || token.hover || highlighted)
     && !token.destroyed && token.visible !== false && mesh && !mesh.destroyed;
   let state = OUTLINES.get(token);
   if (!active || !Filter) { clearTokenOutline(token); return; }
@@ -63,6 +65,15 @@ function wrap(object, key, wrapper) {
   const wrapped = function(...args) { return wrapper.call(this, original, args); };
   wrapped._perspectiveLevelsVisualWrapped = true;
   object[key] = wrapped;
+}
+
+function withMappedGraphics(graphics, method, map, callback) {
+  const original = graphics?.[method];
+  if (typeof original !== "function") return callback();
+  const own = Object.hasOwn(graphics, method);
+  graphics[method] = function(...args) { return original.apply(this, map(args)); };
+  try { return callback(); }
+  finally { if (own) graphics[method] = original; else delete graphics[method]; }
 }
 
 export function installTokenVisualPatches() {
@@ -96,6 +107,24 @@ export function installTokenVisualPatches() {
     updateTokenOutline(this);
     return result;
   });
+  wrap(proto, "_drawTargetArrows", function(original, args) {
+    if (!getTokenVisualCenter(this)) return original.apply(this, args);
+    const bounds = getTokenArtBounds(this), x = bounds.x - this.position.x, y = bounds.y - this.position.y;
+    return withMappedGraphics(this.targetArrows, "drawPolygon", polygonArgs => {
+      if (!Array.isArray(polygonArgs[0]) || typeof polygonArgs[0][0] !== "number") return polygonArgs;
+      const points = polygonArgs[0].map((value, i) => i % 2
+        ? (value >= this.h / 2 ? y + bounds.height + value - this.h : y + value)
+        : (value >= this.w / 2 ? x + bounds.width + value - this.w : x + value));
+      return [points, ...polygonArgs.slice(1)];
+    }, () => original.apply(this, args));
+  });
+  wrap(proto, "_drawTargetPips", function(original, args) {
+    if (!getTokenVisualCenter(this)) return original.apply(this, args);
+    const bounds = getTokenArtBounds(this), dx = bounds.x - this.position.x + bounds.width / 2 - this.w / 2;
+    const dy = bounds.y - this.position.y;
+    return withMappedGraphics(this.targetPips, "drawCircle", ([x, y, ...rest]) => [x + dx, y + dy, ...rest],
+      () => original.apply(this, args));
+  });
 }
 
 function effectToken(effect, side) {
@@ -123,9 +152,13 @@ export function adaptSequencerEffect(effect) {
       if (!token || !data) return data;
       const bounds = getTokenArtBounds(token);
       const considerScale = side === "source" && this.data?.scaleToObject?.considerTokenScale;
+      // A portrait's tall bounding rectangle must not become the aspect ratio
+      // of a sword, burst or aura. Use one extent for object-fit sizing.
+      const extent = Math.max(bounds.width, bounds.height);
+      const objectFit = side === "source" && this.data?.scaleToObject;
       return { ...data, position: { ...data.position, ...getTokenVisualCenter(token) },
-        width: bounds.width / (considerScale ? Math.abs(Number(token.document.texture?.scaleX) || 1) : 1),
-        height: bounds.height / (considerScale ? Math.abs(Number(token.document.texture?.scaleY) || 1) : 1) };
+        width: (objectFit ? extent : bounds.width) / (considerScale ? Math.abs(Number(token.document.texture?.scaleX) || 1) : 1),
+        height: (objectFit ? extent : bounds.height) / (considerScale ? Math.abs(Number(token.document.texture?.scaleY) || 1) : 1) };
     });
   }
   wrap(effect, "_getBaseScale", function(original, args) {
@@ -134,9 +167,16 @@ export function adaptSequencerEffect(effect) {
     return { ...result, baseScaleX: result.baseScaleX * scale, baseScaleY: result.baseScaleY * scale };
   });
   wrap(effect, "_getDistanceScaling", function(original, args) {
-    const scale = effectScale(this);
-    const adjust = result => ({ ...result, scaleY: result.scaleY * scale });
+    const adjust = result => {
+      if (this.data?.screenSpace || this.data?.screenSpaceAboveUI || !this.data?.stretchTo?.onlyX) return result;
+      if (!(effectToken(this, "source") ?? effectToken(this, "target"))) return result;
+      // Keep the native endpoint distance. A width-only stretch must not turn
+      // a perspective-scaled projectile into a flattened or elongated sprite.
+      return { ...result, scaleY: result.scaleX };
+    };
     const result = original.apply(this, args);
     return result?.then ? result.then(adjust) : adjust(result);
   });
+  // Native distance scaling already supplies the uniform scale for ranged
+  // sprites. No additional perspective multiplier is applied to either axis.
 }

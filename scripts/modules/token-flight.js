@@ -1,7 +1,7 @@
 import { MODULE_ID } from "./constants.js";
 import { getRuntimeLevelConfig as getLevelConfig, isPerspectiveEnabled } from "./config.js";
 import { getCachedPerspectiveGridModel, perspectiveGridModelToScreen, perspectiveGroundPointToElevatedScreen,
-  screenPointToPerspectiveGrid } from "./projection.js";
+  screenPointToElevationGroundPoint, screenPointToPerspectiveGrid } from "./projection.js";
 import { getSceneGridDistance, getSceneRect } from "./scene.js";
 import { getDocumentPixelSize, isShiftActive, wrapPrototypeMethod } from "./foundry-helpers.js";
 import { schedulePerspectiveUpdate } from "./token-update-queue.js";
@@ -51,6 +51,36 @@ function withDragEvent(original, args) {
 
 export function installTokenFlightDragPatches(proto) {
   if (!proto) return false;
+
+  wrapPrototypeMethod(proto, "constrainMovementPath", function(original, args) {
+    const config = getLevelConfig(), rect = globalThis.canvas?.dimensions?.rect, document = this.document;
+    if (!globalThis.canvas?.ready || !isPerspectiveEnabled(config) || !rect?.contains || !document?.getMovementOrigin) return original.apply(this, args);
+    const positions = new Map(), nativeOrigin = document.getMovementOrigin, nativeContains = rect.contains;
+    const ownOrigin = Object.hasOwn(document, "getMovementOrigin"), ownContains = Object.hasOwn(rect, "contains");
+    const sceneRect = getSceneRect(), model = getCachedPerspectiveGridModel(config, sceneRect);
+    // Keep native collision origins and wall/pathfinding rules. Only the scene
+    // rectangle's bounds check uses the floor under an elevated waypoint.
+    document.getMovementOrigin = function(data = {}) {
+      const origin = nativeOrigin.call(this, data), position = { ...this._source, ...data };
+      positions.delete(`${origin.x}|${origin.y}`);
+      if (Number(position.elevation)) {
+        const size = this.getSize?.(position) ?? { width: position.width * sceneRect.gridSize, height: position.height * sceneRect.gridSize };
+        const ground = screenPointToElevationGroundPoint({ x: position.x + size.width / 2,
+          y: position.y + size.height, elevation: position.elevation }, config, sceneRect, model);
+        positions.set(`${origin.x}|${origin.y}`, ground);
+      }
+      return origin;
+    };
+    rect.contains = function(x, y) {
+      const ground = positions.get(`${x}|${y}`);
+      return ground ? nativeContains.call(this, ground.x, ground.y) : nativeContains.call(this, x, y);
+    };
+    try { return original.apply(this, args); }
+    finally {
+      if (ownOrigin) document.getMovementOrigin = nativeOrigin; else delete document.getMovementOrigin;
+      if (ownContains) rect.contains = nativeContains; else delete rect.contains;
+    }
+  });
 
   wrapPrototypeMethod(proto, "_initializeDragLeft", function(original, args) {
     const result = original.apply(this, args);

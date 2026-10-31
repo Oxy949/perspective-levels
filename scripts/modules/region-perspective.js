@@ -2,9 +2,11 @@ import { getRuntimeLevelConfig } from "./config.js";
 import { getSceneRect } from "./scene.js";
 import { getCachedPerspectiveGridModel, perspectiveGridModelToScreen, screenPointToPerspectiveGrid,
   screenPointToElevationGroundPoint, perspectiveGroundPointToElevatedScreen } from "./projection.js";
-import { withNativeGridMeasurements } from "./measurement-patches.js";
+import { withNativeGridMeasurements, isNativeGridMeasurement } from "./measurement-patches.js";
 
 const NATIVE_SHAPES = new WeakSet();
+const GRID_FACADES = new WeakMap();
+const MAX_COVERAGE_CELLS = 16000;
 const METRIC_SHAPES = ["RectangleShapeData", "CircleShapeData", "EllipseShapeData", "ConeShapeData", "RingShapeData", "LineShapeData"];
 let coverageDepth = 0;
 let regionRefreshTimer = null;
@@ -34,9 +36,9 @@ function toScreen(point, ctx) {
     (point.x - ctx.rect.x) / ctx.rect.gridSize, (point.y - ctx.rect.y) / ctx.rect.gridSize);
 }
 
-export function projectShapePath(points, origin, config = getRuntimeLevelConfig(), rect = getSceneRect()) {
+export function projectShapePath(points, origin, config = getRuntimeLevelConfig(), rect = getSceneRect(), absolute = false) {
   const ctx = { config, rect, model: getCachedPerspectiveGridModel(config, rect) };
-  const anchor = toGround(origin, ctx);
+  const anchor = absolute ? origin : toGround(origin, ctx);
   const out = [];
   for (let i = 0; i < points.length; i++) {
     const a = points[i], b = points[(i + 1) % points.length];
@@ -50,24 +52,24 @@ export function projectShapePath(points, origin, config = getRuntimeLevelConfig(
   return out;
 }
 
-function projectGeometry(result, origin, ctx) {
+function projectGeometry(result, origin, ctx, absolute = false) {
   const factor = globalThis.CONST?.CLIPPER_SCALING_FACTOR ?? 100;
   if (Array.isArray(result)) {
     if (!result.length) return [];
     if (typeof result[0] === "number") {
       const points = [];
       for (let i = 0; i < result.length; i += 2) points.push({ x: result[i], y: result[i + 1] });
-      return projectShapePath(points, origin, ctx.config, ctx.rect).flatMap(p => [p.x, p.y]);
+      return projectShapePath(points, origin, ctx.config, ctx.rect, absolute).flatMap(p => [p.x, p.y]);
     }
     const clipper = "X" in result[0];
     const points = result.map(p => clipper ? { x: p.X / factor, y: p.Y / factor } : p);
-    const projected = projectShapePath(points, origin, ctx.config, ctx.rect);
+    const projected = projectShapePath(points, origin, ctx.config, ctx.rect, absolute);
     return clipper ? projected.map(p => ({ X: Math.round(p.x * factor), Y: Math.round(p.y * factor) })) : projected;
   }
   // This is a fresh native tree, so holes and winding order can be preserved.
   const walk = node => {
     const contour = node.Contour?.();
-    if (contour?.length) contour.splice(0, contour.length, ...projectGeometry(contour, origin, ctx));
+    if (contour?.length) contour.splice(0, contour.length, ...projectGeometry(contour, origin, ctx, absolute));
     for (const child of node.Childs?.() ?? []) walk(child);
   };
   if (result?.Childs) walk(result);
@@ -83,7 +85,12 @@ function wrap(proto, key, handler) {
 }
 
 function shapeContext(shape) {
-  return NATIVE_SHAPES.has(shape) ? null : context(shape.parent);
+  if (NATIVE_SHAPES.has(shape)) return null;
+  let parent = shape.parent;
+  while (parent && !parent.documentName) parent = parent.parent;
+  // ShapeData is also used internally for Token footprints and Drawings.
+  // Their geometry must remain native; only a Region's shape tree is adapted.
+  return parent?.documentName === "Region" ? context(parent) : null;
 }
 
 function nativeClone(shape) {
@@ -118,7 +125,9 @@ export function getPerspectiveCoveredCells(bounds, contains, config = getRuntime
   }
   const i0 = Math.floor(Math.min(...corners.map(p => p.i))), i1 = Math.ceil(Math.max(...corners.map(p => p.i)));
   const j0 = Math.floor(Math.min(...corners.map(p => p.j))), j1 = Math.ceil(Math.max(...corners.map(p => p.j)));
-  if (![i0, i1, j0, j1].every(Number.isFinite) || (i1 - i0) * (j1 - j0) > 50000) return [];
+  // Native coverage uses four vertices per square and a 16-bit index buffer.
+  // Large areas use their continuous polygon instead of an oversized highlight.
+  if (![i0, i1, j0, j1].every(Number.isFinite) || (i1 - i0) * (j1 - j0) > MAX_COVERAGE_CELLS) return [];
   const cells = [];
   for (let row = j0; row < j1; row++) for (let col = i0; col < i1; col++) {
     const center = perspectiveGridModelToScreen(model, col + 0.5, row + 0.5);
@@ -130,6 +139,7 @@ export function getPerspectiveCoveredCells(bounds, contains, config = getRuntime
 }
 
 export function installRegionPerspectivePatches() {
+  installGridShapePatches();
   for (const name of METRIC_SHAPES) {
     const proto = globalThis.foundry?.data?.[name]?.prototype;
     if (!proto) continue;
@@ -233,7 +243,7 @@ export function installRegionPerspectivePatches() {
   });
   const grid = globalThis.canvas?.grid;
   wrap(grid, "getVertices", function(original, args) {
-    const points = original.apply(this, args), ctx = coverageDepth && context();
+    const points = original.apply(this, args), ctx = coverageDepth && !isNativeGridMeasurement() && context();
     return ctx ? points.map(point => toScreen(point, ctx)) : points;
   });
   const layer = globalThis.foundry?.canvas?.layers?.RegionLayer?.prototype;
@@ -246,6 +256,109 @@ export function installRegionPerspectivePatches() {
   });
   installLegacyTemplatePatches();
   installTokenRegionPatches();
+  installEmanationPatches();
+}
+
+function emanationClone(shape, ctx) {
+  const clone = nativeClone(shape);
+  // Expand the actual base footprint in the logical plane, then project the
+  // resulting contour. Keep this polygon conversion local to the clone.
+  const points = shape.base.polygons[0]?.points ?? [];
+  const flat = [];
+  for (let i = 0; i < points.length; i += 2) {
+    const point = toGround({ x: points[i], y: points[i + 1] }, ctx);
+    flat.push(point.x, point.y);
+  }
+  clone.updateSource({ base: { type: "polygon", points: flat, hole: shape.base.hole ?? false,
+    origin: toGround(shape.base.origin, ctx) } });
+  NATIVE_SHAPES.add(clone.base);
+  clone.base._onShapeChange?.();
+  return clone;
+}
+
+function installEmanationPatches() {
+  const proto = globalThis.foundry?.data?.EmanationShapeData?.prototype;
+  wrap(proto, "_createClipperPolyTree", function(original, args) {
+    const ctx = shapeContext(this);
+    if (!ctx || this.base.isEmpty) return original.apply(this, args);
+    const result = withNativeGridMeasurements(() => original.apply(emanationClone(this, ctx), args));
+    return projectGeometry(result, { x: 0, y: 0 }, ctx, true);
+  });
+  wrap(proto, "_createControlHandles", function(original, args) {
+    const ctx = shapeContext(this);
+    if (!ctx || this.base.isEmpty) return original.apply(this, args);
+    const handles = original.apply(this, args);
+    const native = withNativeGridMeasurements(() => original.apply(emanationClone(this, ctx), args));
+    if (native.offset) handles.offset = { ...native.offset, position: toScreen(native.offset.position, ctx) };
+    return handles;
+  });
+  wrap(proto, "_createMeasuredSegments", function(original, args) {
+    const ctx = shapeContext(this);
+    if (!ctx || this.base.isEmpty) return original.apply(this, args);
+    const segments = withNativeGridMeasurements(() => original.apply(emanationClone(this, ctx), args));
+    return segments.map(segment => ({ ...segment, ray: new foundry.canvas.geometry.Ray(toScreen(segment.ray.A, ctx), toScreen(segment.ray.B, ctx)) }));
+  });
+  for (const method of ["_onDragMove", "moveControlHandle"]) wrap(proto, method, function(original, args) {
+    const ctx = shapeContext(this);
+    if (!ctx || this.base.isEmpty || (method === "moveControlHandle" && args[0] !== "offset")) return original.apply(this, args);
+    const clone = emanationClone(this, ctx), next = [...args];
+    if (method === "moveControlHandle") next[1] = toGround(args[1], ctx);
+    else next[0] = { shiftKey: args[0].shiftKey, interactionData: { ...args[0].interactionData,
+      origin: toGround(this.origin, ctx), destination: toGround(args[0].interactionData.destination, ctx) } };
+    withNativeGridMeasurements(() => original.apply(clone, next));
+    this.updateSource({ radius: clone.radius });
+  });
+}
+
+function perspectiveGridFacade(grid) {
+  if (GRID_FACADES.has(grid)) return GRID_FACADES.get(grid);
+  const methods = new Map();
+  const facade = new Proxy(grid, { get(target, key) {
+    const value = Reflect.get(target, key, target);
+    if (typeof value !== "function") return value;
+    if (!methods.has(key)) methods.set(key, (...args) => {
+      const fn = Reflect.get(target, key, target), ctx = context();
+      if (!ctx) return fn.apply(target, args);
+      if (key === "measurePath") return withNativeGridMeasurements(() => fn.call(target, args[0].map(p => ({ ...p, ...toGround(p, ctx) })), args[1]));
+      if (["getOffset", "getSnappedPoint", "getTranslatedPoint"].includes(key)) {
+        const result = withNativeGridMeasurements(() => fn.call(target, toGround(args[0], ctx), ...args.slice(1)));
+        return key === "getOffset" ? result : toScreen(result, ctx);
+      }
+      if (["getCenterPoint", "getTopLeftPoint", "getVertices"].includes(key)) {
+        const result = withNativeGridMeasurements(() => fn.apply(target, args));
+        return Array.isArray(result) ? result.map(point => toScreen(point, ctx)) : toScreen(result, ctx);
+      }
+      return withNativeGridMeasurements(() => fn.apply(target, args));
+    });
+    return methods.get(key);
+  } });
+  GRID_FACADES.set(grid, facade);
+  return facade;
+}
+
+function installGridShapePatches() {
+  const proto = globalThis.foundry?.data?.GridShapeData?.prototype;
+  if (!proto || Object.hasOwn(proto, "_perspectiveLevelsGridShape")) return;
+  proto._perspectiveLevelsGridShape = true;
+  let owner = proto;
+  while (owner && !Object.getOwnPropertyDescriptor(owner, "grid")) owner = Object.getPrototypeOf(owner);
+  const getter = owner && Object.getOwnPropertyDescriptor(owner, "grid")?.get;
+  if (getter) Object.defineProperty(proto, "grid", { configurable: true, get() {
+    const grid = getter.call(this);
+    return shapeContext(this) ? perspectiveGridFacade(grid) : grid;
+  } });
+  wrap(proto, "_createClipperPolyTree", function(original, args) {
+    const ctx = shapeContext(this);
+    if (!ctx) return original.apply(this, args);
+    const result = withNativeGridMeasurements(() => original.apply(nativeClone(this), args));
+    return projectGeometry(result, { x: 0, y: 0 }, ctx, true);
+  });
+  for (const method of ["sampleInterior", "sampleBoundary"]) wrap(proto, method, function(original, args) {
+    const ctx = shapeContext(this);
+    if (!ctx) return original.apply(this, args);
+    const point = withNativeGridMeasurements(() => original.apply(nativeClone(this), args));
+    return Object.assign(point, toScreen(point, ctx));
+  });
 }
 
 function regionTokenPosition(document, data, ctx, inverse = false) {
@@ -265,12 +378,14 @@ function installTokenRegionPatches() {
   const proto = globalThis.foundry?.documents?.TokenDocument?.prototype ?? globalThis.CONFIG?.Token?.documentClass?.prototype;
   wrap(proto, "testInsideRegion", function(original, [region, data = {}]) {
     const ctx = context(region);
-    if (!ctx || this.parent !== canvas.scene) return original.call(this, region, data);
+    const level = data.level ?? this._source.level;
+    if (!ctx || this.parent !== canvas.scene || (level && level !== canvas.level?.id)) return original.call(this, region, data);
     return original.call(this, region, regionTokenPosition(this, { ...this._source, ...data }, ctx));
   });
   wrap(proto, "segmentizeRegionMovementPath", function(original, [region, waypoints]) {
     const ctx = context(region);
-    if (!ctx || this.parent !== canvas.scene) return original.call(this, region, waypoints);
+    const level = waypoints[0]?.level ?? this._source.level;
+    if (!ctx || this.parent !== canvas.scene || (level && level !== canvas.level?.id)) return original.call(this, region, waypoints);
     let previous = this._source;
     const groundPath = waypoints.map(waypoint => {
       previous = { ...previous, ...waypoint };
@@ -360,7 +475,8 @@ export function refreshPerspectiveRegions() {
     regionWrites = regionWrites.then(() => {
       if (globalThis.canvas?.ready && canvas.scene === scene && canvas.level === level
         && regionRefreshGeneration === generation && regionGeometrySignature(getRuntimeLevelConfig()) === signature) {
-        return scene.updateTokenRegions();
+        const tokens = scene.tokens ? [...scene.tokens].filter(token => !token.level || token.level === level?.id) : undefined;
+        return scene.updateTokenRegions(tokens);
       }
     }).catch(error => console.warn("perspective-levels | Failed to refresh token regions", error));
   }, 350);
@@ -376,4 +492,5 @@ export function clearPerspectiveRegionState() {
   if (regionRefreshTimer !== null) clearTimeout(regionRefreshTimer);
   regionRefreshTimer = null; lastRegionSignature = null; lastRegionScene = null;
   regionRefreshGeneration++;
+  regionWrites = Promise.resolve();
 }

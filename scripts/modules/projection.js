@@ -246,8 +246,8 @@ function projectionOnGridRow(model, row, point) {
   const widthLenSq = Math.max(0.0001, width.x * width.x + width.y * width.y);
   const rawU = ((point.x - left.x) * width.x + (point.y - left.y) * width.y) / widthLenSq;
 
-  // Allow a generous amount of measuring just outside the drawn strip, but do
-  // not let pathological anchor rotations choose a wildly distant extension.
+  // Sideways extensions keep their actual coordinate instead of clamping the
+  // token to a different cell when it is far from the drawn strip.
   const u = rawU;
   const projected = {
     x: left.x + width.x * u,
