@@ -8,42 +8,45 @@ const PENDING_PERSPECTIVE_UPDATE_BURSTS = new Map();
 const PERSPECTIVE_UPDATE_BURST_DELAYS_MS = [0, 50, 125, 250, 500];
 let PENDING_PERSPECTIVE_RAF = null;
 
-function addTokenLikeToSet(value, set, seen = new Set()) {
+function addTokenLikeToSet(value, set, seen, token) {
   if (!value || typeof value !== "object") return;
   if (seen.has(value)) return;
   seen.add(value);
 
   if (isTokenObject(value)) {
-    set.add(value);
+    const original = token?._original ?? token;
+    const candidateOriginal = value?._original ?? value;
+    const sameDocument = original?.document?.uuid && original.document.uuid === candidateOriginal?.document?.uuid;
+    if (value === token || candidateOriginal === original || sameDocument) set.add(value);
     return;
   }
 
   if (Array.isArray(value) || value instanceof Set) {
-    for (const entry of value) addTokenLikeToSet(entry, set, seen);
+    for (const entry of value) addTokenLikeToSet(entry, set, seen, token);
     return;
   }
 
   if (value instanceof Map) {
-    for (const entry of value.values()) addTokenLikeToSet(entry, set, seen);
+    for (const entry of value.values()) addTokenLikeToSet(entry, set, seen, token);
     return;
   }
 
   if (Array.isArray(value.children)) {
-    for (const child of value.children) addTokenLikeToSet(child, set, seen);
+    for (const child of value.children) addTokenLikeToSet(child, set, seen, token);
   }
 
   if (Array.isArray(value.placeables)) {
-    for (const placeable of value.placeables) addTokenLikeToSet(placeable, set, seen);
+    for (const placeable of value.placeables) addTokenLikeToSet(placeable, set, seen, token);
   }
 }
 
 export function collectTokenAndDragPreviews(token) {
   const set = new Set();
   const seen = new Set();
-  addTokenLikeToSet(token, set, seen);
+  addTokenLikeToSet(token, set, seen, token);
 
   for (const key of ["_preview", "preview", "_dragPreview", "_movementPreview", "_previewObject"]) {
-    try { addTokenLikeToSet(token?.[key], set, seen); }
+    try { addTokenLikeToSet(token?.[key], set, seen, token); }
     catch (_err) { /* private access may throw in some builds */ }
   }
 
@@ -58,18 +61,16 @@ export function collectTokenAndDragPreviews(token) {
     canvasRef?.tokens?.preview,
     canvasRef?.tokens?._preview
   ]) {
-    addTokenLikeToSet(source, set, seen);
+    addTokenLikeToSet(source, set, seen, token);
   }
 
   return [...set];
 }
 
 function applyPerspectiveToTokenAndPreviews(token, touchedTokens) {
-  applyPerspectiveToToken(token, { scheduleSort: false });
-  touchedTokens.add(token);
-
+  if (token.destroyed || touchedTokens.has(token)) return;
   for (const preview of collectTokenAndDragPreviews(token)) {
-    if (preview === token) continue;
+    if (touchedTokens.has(preview) || preview.destroyed) continue;
     applyPerspectiveToToken(preview, { scheduleSort: false });
     touchedTokens.add(preview);
   }
@@ -95,6 +96,7 @@ function flushPerspectiveUpdates() {
   }
 
   for (const token of tokenOnly) {
+    if (touchedTokens.has(token) || token.destroyed) continue;
     try {
       applyPerspectiveToToken(token, { scheduleSort: false });
       touchedTokens.add(token);

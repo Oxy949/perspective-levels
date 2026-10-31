@@ -29,11 +29,13 @@ A Foundry VTT 14 module that adds visual perspective to individual Scene Levels 
 6. Drag the far and near line anchors. Rotate a line with the mouse wheel while hovering over it; hold Shift while scrolling for fine adjustment. Their scale is controlled by the sliders.
 7. Click **Save to Level**.
 
-When **Ginzzzu's Portraits & NPC Dock** (`ginzzzu-portraits`) is active, each actor's **Portrait Height Multiplier** also scales their token art proportionally. The token's ground footprint and shadow keep their size. Changes update the token and its drag preview immediately; without the module or a configured multiplier, the multiplier is 1.
+When **Ginzzzu's Portraits & NPC Dock** (`ginzzzu-portraits`) is active, each actor's **Portrait Height Multiplier**, multiplied by their active **Emotion Height Multiplier**, also scales their token art proportionally. Switching or clearing emotions updates the height of both the token and its drag preview, including when the portrait module synchronizes a new token image with a native fade. Texture dimensions are recalculated as the new art loads. The token's ground footprint and shadow keep their size; without the module or a configured multiplier, the multiplier is 1.
 
 ## Development checks
 
 Run `node --test "tests/*.test.mjs"` with Node.js 24 or newer. The tests cover configuration, projection, distances, keyboard and drag movement, calibration saves, overlays, token art, shadows, sorting, effects and scene cleanup using Foundry API doubles.
+
+Large-scene checks also cover one display-container sort per batch, shadow reuse without scene-child scans or redundant redraws, and updating only the matching token family during group dragging.
 
 ## Important Limitation
 

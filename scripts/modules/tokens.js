@@ -10,6 +10,7 @@ const ORIGINAL_TOKEN_STATE = new WeakMap();
 const TOKEN_BASE_SCALE_BY_DOCUMENT = new Map();
 const TOKEN_BASE_RETRY_COUNT = new WeakMap();
 const TOKEN_SHADOW_PREVIEWS = new WeakMap();
+const TOKEN_FLIGHT_SHADOWS = new WeakMap();
 const ENDED_TOKEN_SHADOW_PREVIEWS = new WeakSet();
 const PERSPECTIVE_SORT_STEP = 100000;
 const PERSPECTIVE_SORT_DEBOUNCE_MS = 90;
@@ -271,33 +272,13 @@ export function endTokenShadowPreview(token) {
   destroyFlightShadow(token);
 }
 
-function isFlightShadowForToken(child, token) {
-  return child?.name === FLIGHT_SHADOW_NAME && child?._perspectiveLevelsToken === token;
-}
-
-function getFlightShadowCandidateParents(token) {
-  return [
-    token,
-    token?.parent,
-    token?.mesh?.parent,
-    globalThis.canvas?.primary,
-    globalThis.canvas?.tokens?.objects,
-    globalThis.canvas?.tokens
-  ];
-}
-
 function collectFlightShadowCandidates(token, state = null) {
+  // Keep ownership by token identity: a drag clone shares its document id with
+  // the original, but must never adopt or destroy the original's shadow.
   const candidates = new Set();
   if (state?.flightShadow) candidates.add(state.flightShadow);
-
-  for (const parent of getFlightShadowCandidateParents(token)) {
-    const children = parent?.children;
-    if (!Array.isArray(children)) continue;
-    for (const child of children) {
-      if (isFlightShadowForToken(child, token)) candidates.add(child);
-    }
-  }
-
+  const shadow = TOKEN_FLIGHT_SHADOWS.get(token);
+  if (shadow) candidates.add(shadow);
   return candidates;
 }
 
@@ -312,10 +293,13 @@ function destroyDisplayObject(object) {
 
 function destroyFlightShadow(token, state = ORIGINAL_TOKEN_STATE.get(token)) {
   for (const candidate of collectFlightShadowCandidates(token, state)) destroyDisplayObject(candidate);
+  TOKEN_FLIGHT_SHADOWS.delete(token);
 
   if (state) {
     state.flightShadow = null;
     state.flightShadowParent = null;
+    state.flightShadowOrderParent = null;
+    state.flightShadowOrderMesh = null;
   }
   const original = token?._original ?? token;
   const previews = TOKEN_SHADOW_PREVIEWS.get(original);
@@ -359,15 +343,20 @@ function placeFlightShadowBelowToken(token, state) {
   if (!shadow || !parent || shadow.destroyed) return;
 
   const baseSort = Number(token?.mesh?.sort ?? token?.mesh?.zIndex ?? token?.document?.sort ?? 0) || 0;
-  shadow.elevation = getTokenRenderElevation(token);
-  shadow.sortLayer = token?.mesh?.sortLayer ?? 0;
+  const elevation = getTokenRenderElevation(token);
+  const sortLayer = token?.mesh?.sortLayer ?? 0;
+  const changed = shadow.elevation !== elevation || shadow.sortLayer !== sortLayer || shadow.sort !== baseSort - 1;
+  shadow.elevation = elevation;
+  shadow.sortLayer = sortLayer;
   shadow.sort = baseSort - 1;
   shadow.zIndex = baseSort - 1;
 
-  try { parent.sortableChildren = true; } catch (_err) { /* noop */ }
-  try { parent.sortDirty = true; } catch (_err) { /* noop */ }
+  if (changed) {
+    try { parent.sortableChildren = true; parent.sortDirty = true; } catch (_err) { /* noop */ }
+  }
 
-  if (parent === token?.mesh?.parent && typeof parent.getChildIndex === "function" && typeof parent.addChildAt === "function") {
+  if ((state.flightShadowOrderParent !== parent || state.flightShadowOrderMesh !== token.mesh)
+    && parent === token?.mesh?.parent && typeof parent.getChildIndex === "function" && typeof parent.addChildAt === "function") {
     try {
       const meshIndex = parent.getChildIndex(token.mesh);
       const shadowIndex = parent.getChildIndex(shadow);
@@ -377,6 +366,8 @@ function placeFlightShadowBelowToken(token, state) {
       }
     } catch (_err) { /* sortableChildren usually handles this */ }
   }
+  state.flightShadowOrderParent = parent;
+  state.flightShadowOrderMesh = token.mesh;
 }
 
 function ensureFlightShadow(token, state) {
@@ -395,6 +386,7 @@ function ensureFlightShadow(token, state) {
     shadow._perspectiveLevelsTokenKey = getTokenShadowKey(token);
     shadow._perspectiveLevelsToken = token;
     state.flightShadow = shadow;
+    TOKEN_FLIGHT_SHADOWS.set(token, shadow);
   }
 
   if (shadow.parent !== parent) {
@@ -482,7 +474,14 @@ function updateFlightShadow(token, state, perspectiveScale, config, rect = getSc
   shadow.rotation = 0;
   shadow.scale?.set?.(1, 1);
   shadow.position?.set?.(parentPoint.x, parentPoint.y);
-  drawFlightShadow(shadow, radiusX, radiusY, alpha);
+  // Moving a token often changes only its position, not the shadow geometry.
+  if (shadow._perspectiveLevelsRadiusX !== radiusX || shadow._perspectiveLevelsRadiusY !== radiusY
+    || shadow._perspectiveLevelsFillAlpha !== alpha) {
+    drawFlightShadow(shadow, radiusX, radiusY, alpha);
+    shadow._perspectiveLevelsRadiusX = radiusX;
+    shadow._perspectiveLevelsRadiusY = radiusY;
+    shadow._perspectiveLevelsFillAlpha = alpha;
+  }
   placeFlightShadowBelowToken(token, state);
   const original = token?._original ?? token;
   if (original !== token) {
@@ -931,7 +930,7 @@ function buildIncrementalPerspectiveSortSnapshot(config, dirtyTokens) {
   return buildPerspectiveSortEntriesFromCache();
 }
 
-function markFoundrySortDirty(token) {
+function markFoundrySortDirty(token, dirtyContainers) {
   applyTokenRenderElevation(token);
 
   const objects = [
@@ -948,22 +947,22 @@ function markFoundrySortDirty(token) {
     try { object.sortableChildren = true; } catch (_err) { /* noop */ }
     try { object.sortDirty = true; } catch (_err) { /* noop */ }
   }
+  for (const container of [token?.layer?.objects, globalThis.canvas?.primary]) {
+    if (container && !container.destroyed) dirtyContainers.add(container);
+  }
 
   try { token?.renderFlags?.set?.({ refreshElevation: true }); } catch (_err) { /* noop */ }
   try { token?.applyRenderFlags?.(); } catch (_err) { /* noop */ }
   applyTokenRenderElevation(token);
-  try { token?.layer?.objects?.sortChildren?.(); } catch (_err) { /* noop */ }
-  try { globalThis.canvas?.primary?.sortChildren?.(); } catch (_err) { /* noop */ }
-  applyTokenRenderElevation(token);
 }
 
-function applyTokenDocumentSortLocally(token, sort, { markIfSame = true } = {}) {
+function applyTokenDocumentSortLocally(token, sort, { markIfSame = true, dirtyContainers } = {}) {
   const document = token?.document;
   if (!document) return false;
 
   const current = Number(document.sort ?? 0);
   if (Number.isFinite(current) && current === sort) {
-    if (markIfSame) markFoundrySortDirty(token);
+    if (markIfSame) markFoundrySortDirty(token, dirtyContainers);
     return false;
   }
 
@@ -978,7 +977,7 @@ function applyTokenDocumentSortLocally(token, sort, { markIfSame = true } = {}) 
   try { if (token.mesh) token.mesh.sort = sort; } catch (_err) { /* noop */ }
   applyTokenRenderElevation(token);
   placeFlightShadowBelowToken(token, ORIGINAL_TOKEN_STATE.get(token));
-  markFoundrySortDirty(token);
+  markFoundrySortDirty(token, dirtyContainers);
   return true;
 }
 
@@ -997,18 +996,24 @@ function applyPerspectiveSortNow(config = getLevelConfig(), { persist = false, f
     LAST_LOCAL_SORT_SIGNATURE = "";
     return snapshot;
   }
+  const dirtyContainers = new Set();
 
   if (snapshot.signature !== LAST_LOCAL_SORT_SIGNATURE) {
-    for (const entry of snapshot.entries) applyTokenDocumentSortLocally(entry.token, entry.sort, { markIfSame: fullRebuild });
+    for (const entry of snapshot.entries) applyTokenDocumentSortLocally(entry.token, entry.sort, { markIfSame: fullRebuild, dirtyContainers });
     LAST_LOCAL_SORT_SIGNATURE = snapshot.signature;
   } else {
     // A HUD/manual document update can change sort without changing the cached
     // depth order. Restore the actual values as well as marking containers dirty.
     for (const entry of snapshot.entries) {
-      if (Number(entry.token.document.sort) !== entry.sort) applyTokenDocumentSortLocally(entry.token, entry.sort);
+      if (Number(entry.token.document.sort) !== entry.sort) applyTokenDocumentSortLocally(entry.token, entry.sort, { dirtyContainers });
     }
     const tokensToMark = fullRebuild ? snapshot.entries.map(entry => entry.token) : scopedDirtyTokens;
-    for (const token of tokensToMark) markFoundrySortDirty(token);
+    for (const token of tokensToMark) markFoundrySortDirty(token, dirtyContainers);
+  }
+  // Sorting the same scene graph for every changed token made group dragging
+  // increasingly expensive. Commit the display order once for the whole batch.
+  for (const container of dirtyContainers) {
+    try { container.sortChildren?.(); } catch (_err) { /* noop */ }
   }
 
   if (persist) persistPerspectiveSortSnapshot(snapshot);

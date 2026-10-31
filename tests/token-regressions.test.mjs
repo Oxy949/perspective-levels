@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
 import { installTokenPerspectiveLifecyclePatches } from "../scripts/modules/token-lifecycle-patches.js";
 import { installTokenPerspectiveShapePatch } from "../scripts/modules/token-hit-testing.js";
-import { clearPerspectiveUpdateState } from "../scripts/modules/token-update-queue.js";
+import { clearPerspectiveUpdateState, collectTokenAndDragPreviews, schedulePerspectiveUpdate } from "../scripts/modules/token-update-queue.js";
 import { applyPerspectiveToToken, clearPerspectiveSortState, clearTokenScaleState, getTokenGroundPoint, removePerspectiveFromToken, schedulePerspectiveSort } from "../scripts/modules/tokens.js";
 import { registerHooks, gridOverlay, calibrator } from "../scripts/modules/runtime.js";
+import { getTokenArtMultiplier, isTokenArtMultiplierUpdate } from "../scripts/modules/token-art.js";
 
 class Point {
   constructor(x = 0, y = 0) { this.set(x, y); }
@@ -178,6 +179,62 @@ function artBounds(token) {
 function shadowOf(token) {
   return canvas.primary.children.find(child => child._perspectiveLevelsToken === token);
 }
+
+test("a large scene sorts each display container once per batch", () => {
+  const tokens = Array.from({ length: 120 }, (_, i) => new Token(`token-${i}`, { y: 200 + i * 5 }));
+  canvas.tokens.placeables = tokens;
+  let sorts = 0;
+  canvas.primary.sortChildren = () => { sorts++; };
+  schedulePerspectiveSort({ force: true });
+  framesUntilIdle();
+  assert.equal(sorts, 1);
+});
+
+test("warm token refreshes do not scan scene children or redraw unchanged shadows", () => {
+  const tokens = Array.from({ length: 80 }, (_, i) => new Token(`token-${i}`));
+  for (const token of tokens) applyPerspectiveToToken(token, { scheduleSort: false });
+  let visits = 0;
+  let redraws = 0;
+  canvas.primary.children[Symbol.iterator] = function* () {
+    for (let i = 0; i < this.length; i++) { visits++; yield this[i]; }
+  };
+  for (const token of tokens) {
+    const shadow = shadowOf(token);
+    const clear = shadow.clear.bind(shadow);
+    shadow.clear = () => { redraws++; clear(); };
+  }
+  for (let frame = 0; frame < 3; frame++) {
+    for (const token of tokens) applyPerspectiveToToken(token, { scheduleSort: false });
+  }
+  assert.equal(visits, 0);
+  assert.equal(redraws, 0);
+});
+
+test("group drag updates each token family once instead of updating unrelated previews", () => {
+  const originals = Array.from({ length: 30 }, (_, i) => new Token(`token-${i}`));
+  const previews = originals.map(original => {
+    const clone = new Token(original.document.id);
+    clone._original = original;
+    clone.actor = original.actor;
+    canvas.tokens.preview.addChild(clone);
+    return clone;
+  });
+  const family = collectTokenAndDragPreviews(originals[0]);
+  assert.equal(family.length, 2);
+  assert.equal(family[0] === originals[0] && family[1] === previews[0], true);
+  const updates = new Map();
+  for (const token of [...originals, ...previews]) {
+    const set = token.mesh.scale.set.bind(token.mesh.scale);
+    token.mesh.scale.set = (...args) => {
+      updates.set(token, (updates.get(token) ?? 0) + 1);
+      set(...args);
+    };
+  }
+  for (const token of [...originals, ...previews]) schedulePerspectiveUpdate(token);
+  // Run only the update batch; depth sorting is queued for the next frame.
+  frameCallbacks.shift()();
+  for (const token of [...originals, ...previews]) assert.equal(updates.get(token), 1);
+});
 
 test("a group changes height without touching originals and can be dragged again after drop", () => {
   const tokens = [new Token("a"), new Token("b", { x: 500, y: 800, elevation: 5 })];
@@ -406,13 +463,103 @@ test("portrait art multiplier is optional, uniform, live and never changes groun
 
 test("actor flag updates refresh both the original and its active drag preview", () => {
   game.modules = new Map([['ginzzzu-portraits', { active: true }]]);
-  const actor = { id: 'actor', getFlag: () => 1.5 };
+  const actor = { id: 'actor', getFlag: (_module, key) => key === 'portraitHeightMultiplier' ? 1.5 : undefined };
   const original = new Token('a'), clone = new Token('a');
   original.actor = clone.actor = actor; clone._original = original;
   canvas.tokens.placeables = [original]; canvas.tokens.preview.addChild(clone);
   hooks.get('updateActor')(actor, { flags: { 'ginzzzu-portraits': { portraitHeightMultiplier: 1.5 } } });
   framesUntilIdle();
   closeTo(original.mesh.scale.x, 0.9); closeTo(clone.mesh.scale.x, 0.9);
+});
+
+test("emotion art and height changes update tokens and previews without moving their feet or shadows", () => {
+  game.modules = new Map([['ginzzzu-portraits', { active: true }]]);
+  const flags = { portraitHeightMultiplier: 1.5 };
+  const actor = { id: 'actor', flags: { 'ginzzzu-portraits': flags } };
+  const original = new Token('a'), clone = new Token('a');
+  original.actor = clone.actor = actor;
+  original.document.object = original;
+  clone._original = original;
+  canvas.tokens.placeables = [original];
+  canvas.tokens.preview.addChild(clone);
+  applyPerspectiveToToken(original, { scheduleSort: false });
+  const radius = shadowOf(original).ellipses[0].rx;
+  closeTo(original.mesh.scale.y, 0.9);
+
+  flags.portraitEmotion = 'custom_0';
+  flags.emotionHeightMultiplier = 2;
+  hooks.get('updateActor')(actor, { flags: { 'ginzzzu-portraits': {
+    portraitEmotion: 'custom_0', emotionHeightMultiplier: 2
+  } } });
+  framesUntilIdle();
+  closeTo(original.mesh.scale.y, 1.8);
+  closeTo(clone.mesh.scale.y, 1.8);
+
+  // A tall replacement texture arrives after the actor update and native fade starts.
+  original.document.texture.src = 'emotion.webp';
+  original.mesh.texture.orig = { width: 100, height: 300 };
+  hooks.get('updateToken')(original.document, { texture: { src: 'emotion.webp' } }, {
+    animate: true, animation: { duration: 320, transition: 'fade' }
+  });
+  clone.document.texture.src = 'emotion.webp';
+  clone.mesh.texture.orig = { width: 100, height: 300 };
+  hooks.get('drawToken')(clone);
+  framesUntilIdle();
+
+  for (const token of [original, clone]) {
+    closeTo(token.mesh.scale.y * token.mesh.texture.orig.height, 180);
+    closeTo(artBounds(token).bottom, token.h);
+    assert.equal(token.document.height, 1);
+    assert.equal(token.document.width, 1);
+    assert.equal(token.document.texture.scaleY, 1);
+    assert.equal(token.document.sourceWrites, 0);
+    assert.equal(token.document.extraUpdates, 0);
+  }
+  closeTo(shadowOf(clone).ellipses[0].rx, radius);
+
+  delete flags.emotionHeightMultiplier;
+  flags.portraitEmotion = null;
+  hooks.get('updateActor')(actor, { flags: { 'ginzzzu-portraits': {
+    portraitEmotion: null, '-=emotionHeightMultiplier': null
+  } } });
+  framesUntilIdle();
+  for (const token of [original, clone]) {
+    closeTo(token.mesh.scale.y * token.mesh.texture.orig.height, 90);
+    closeTo(artBounds(token).bottom, token.h);
+  }
+});
+
+test("emotion height flags support defaults, numeric strings, zero, invalid values and preview actors", () => {
+  game.modules = new Map([['ginzzzu-portraits', { active: true }]]);
+  const flags = { portraitHeightMultiplier: 1.5 };
+  const actor = { flags: { 'ginzzzu-portraits': flags } };
+  const preview = { _original: { actor } };
+  for (const [value, expected] of [[2, 3], ['0.5', 0.75], [0, 0], [null, 1.5],
+    ['', 1.5], [-1, 1.5], [NaN, 1.5], [Infinity, 1.5], [false, 1.5], ['bad', 1.5]]) {
+    flags.emotionHeightMultiplier = value;
+    assert.equal(getTokenArtMultiplier(preview), expected);
+  }
+  delete flags.portraitHeightMultiplier;
+  flags.emotionHeightMultiplier = 2;
+  assert.equal(getTokenArtMultiplier({ document: { actor } }), 2);
+});
+
+test("only height-affecting portrait flags queue perspective work, including flag deletions", () => {
+  for (const changes of [
+    { flags: { 'ginzzzu-portraits': { emotionHeightMultiplier: 1.5 } } },
+    { 'flags.ginzzzu-portraits.emotionHeightMultiplier': 1.5 },
+    { 'flags.ginzzzu-portraits': { emotionHeightMultiplier: 1.5 } },
+    { flags: { 'ginzzzu-portraits': { '-=emotionHeightMultiplier': null } } },
+    { 'flags.ginzzzu-portraits.-=portraitHeightMultiplier': null },
+    { flags: { '-=ginzzzu-portraits': null } }
+  ]) assert.equal(isTokenArtMultiplierUpdate(changes), true);
+  for (const changes of [null, {}, { system: { hp: 5 } },
+    { flags: { 'ginzzzu-portraits': { portraitEmotion: 'joy', portraitCustomImage: 'new.webp' } } },
+    { 'flags.ginzzzu-portraits.displayName': 'Name' }
+  ]) assert.equal(isTokenArtMultiplierUpdate(changes), false);
+
+  hooks.get('updateActor')({ id: 'actor' }, { flags: { 'ginzzzu-portraits': { portraitEmotion: 'joy' } } });
+  assert.equal(frameCallbacks.length, 0);
 });
 
 function framesUntilIdle() {
