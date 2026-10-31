@@ -31,7 +31,7 @@ A Foundry VTT 14 module that adds visual perspective to individual Scene Levels 
 
 When **Ginzzzu's Portraits & NPC Dock** (`ginzzzu-portraits`) is active, each actor's **Portrait Height Multiplier**, multiplied by their active **Emotion Height Multiplier**, also scales their token art proportionally. Switching or clearing emotions updates the height of both the token and its drag preview, including when the portrait module synchronizes a new token image with a native fade. Texture dimensions are recalculated as the new art loads. The token's ground footprint and shadow keep their size; without the module or a configured multiplier, the multiplier is 1.
 
-Selected or hovered tokens, including all visible tokens highlighted by holding Alt, have a static art-contour outline in their disposition color. This per-level option is enabled by default and can be disabled in Level Perspective settings. Filters are created only for highlighted tokens and are removed when highlighting ends, on mesh replacement or canvas teardown. Secret tokens retain Foundry's normal visibility rules.
+Selected or hovered tokens, including all visible tokens highlighted by holding Alt, have a static art-contour outline in their disposition color. This per-level option is enabled by default and can be disabled in Level Perspective settings. The filter preserves the art's opacity, including hidden tokens visible to the GM, drag previews and fades. Filters are created only for highlighted tokens and are removed when highlighting ends, on mesh replacement or canvas teardown. Secret tokens retain Foundry's normal visibility rules.
 
 Animation targeting and target markers use the visible portrait center. The module adapts live Sequencer effect instances for AutoAnimations, including fixed-size melee and object-sized effects. Perspective compensation is uniform; object-sized effects keep their image proportions and are not multiplied twice. Ranged effects keep their endpoint distance with equal X/Y scale, including effects configured to stretch only horizontally. Screen-space effects retain their normal behavior. No files in AutoAnimations or Sequencer are modified.
 
@@ -42,6 +42,8 @@ Altitude is applied as a reversible displacement in continuous perspective rows,
 ## Development checks
 
 Run `node --test "tests/*.test.mjs"` with Node.js 24 or newer. The tests cover configuration, projection, distances, keyboard and drag movement, calibration saves, overlays, token art, shadows, sorting, effects and scene cleanup using Foundry API doubles.
+
+To also check the outline shader in real WebGL, set `PERSPECTIVE_WEBGL_BROWSER` to a Chrome/Chromium/Edge executable before running the tests. The optional headless check renders all three quality modes with hidden-token, drag-preview and fade opacity values, then verifies the resulting pixels. It uses a temporary browser profile.
 
 Large-scene checks also cover one display-container sort per batch, shadow reuse without scene-child scans or redundant redraws, and updating only the matching token family during group dragging.
 

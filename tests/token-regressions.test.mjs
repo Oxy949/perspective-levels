@@ -521,9 +521,10 @@ test("native Alt state refresh swaps the border for an outline and clears it on 
   const previous = foundry.canvas.rendering;
   try {
     const filters = [];
-    foundry.canvas.rendering = { filters: { OutlineOverlayFilter: { create(uniforms) {
-      const filter = { uniforms, destroy() { this.destroyed = true; } }; filters.push(filter); return filter;
-    } } } };
+    foundry.canvas.rendering = { filters: { OutlineOverlayFilter: class {
+      static create(uniforms) { const filter = new this(); filter.uniforms = uniforms; filters.push(filter); return filter; }
+      destroy() { this.destroyed = true; }
+    } } };
     const token = new Token('alt'); token.border = { renderable: true };
     canvas.tokens.highlightObjects = true; token._refreshState();
     assert.equal(filters.length, 1); assert.equal(token.border.renderable, false);

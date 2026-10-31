@@ -172,8 +172,9 @@ beforeEach(() => {
     scene: { regions: [] }, dimensions: { size: 100, sceneWidth: 2000, sceneHeight: 1500 } };
   globalThis.foundry = { documents: { TokenDocument }, grid: { BaseGrid: Grid }, data: { CircleShapeData: CircleShape,
     RingShapeData: RingShape, GridShapeData: GridShape, EmanationShapeData: EmanationShape }, canvas: {
-    placeables: { Token, Region, MeasuredTemplate }, geometry: { Ray }, rendering: { filters: { OutlineOverlayFilter: {
-      create(uniforms) { const filter = { uniforms, destroy() { this.destroyed = true; } }; filters.push(filter); return filter; }
+    placeables: { Token, Region, MeasuredTemplate }, geometry: { Ray }, rendering: { filters: { OutlineOverlayFilter: class {
+      static create(uniforms) { const filter = new this(); filter.uniforms = uniforms; filters.push(filter); return filter; }
+      destroy() { this.destroyed = true; }
     } } } } };
   installTokenVisualPatches(); installPerspectiveMeasurementPatch(); installRegionPerspectivePatches();
 });
@@ -230,6 +231,26 @@ test("outline follows a recreated mesh and cleans up only its own filters", () =
   updateTokenOutline(token); assert.equal(previous.filters.length, 0); assert.equal(filters[0].destroyed, true);
   assert.equal(filters.length, 2);
   clearTokenOutline(token); assert.equal(token.mesh.filters.length, 0); assert.equal(token.border.renderable, true);
+});
+
+test("hidden GM tokens and drag previews retain native opacity and player visibility", () => {
+  const original = new Token(), preview = new Token();
+  original.document.hidden = preview.document.hidden = true;
+  original.controlled = preview.controlled = true;
+  preview._original = original;
+  original.mesh.alpha = 0.2; preview.mesh.alpha = 0.4;
+  original.mesh.visible = preview.mesh.visible = true;
+  for (let i = 0; i < 100; i++) {
+    updateTokenOutline(original); updateTokenOutline(preview);
+  }
+  assert.equal(filters.length, 2);
+  assert.equal(original.mesh.alpha, 0.2); assert.equal(preview.mesh.alpha, 0.4);
+  assert.equal(original.mesh.visible, true); assert.equal(preview.mesh.visible, true);
+  original.visible = false; original.mesh.visible = false;
+  updateTokenOutline(original);
+  assert.equal(original.mesh.visible, false); assert.deepEqual(original.mesh.filters, []);
+  assert.equal(filters[0].destroyed, true); assert.equal(filters[1].destroyed, undefined);
+  clearTokenOutline(preview);
 });
 
 test("Alt highlights visible tokens with disposition outlines and respects secret tokens and the setting", () => {

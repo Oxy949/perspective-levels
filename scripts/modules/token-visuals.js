@@ -1,6 +1,7 @@
 import { getRuntimeLevelConfig } from "./config.js";
 import { getTokenClass } from "./foundry-helpers.js";
 import { getTokenArtBounds } from "./token-hit-testing.js";
+import { createTokenOutlineFilter } from "./token-outline.js";
 
 const OUTLINES = new WeakMap();
 const NATIVE_POSITION_REFRESH = new WeakSet();
@@ -35,18 +36,16 @@ export function clearTokenOutline(token) {
 
 export function updateTokenOutline(token, config = getRuntimeLevelConfig()) {
   const mesh = token?.mesh;
-  const Filter = globalThis.foundry?.canvas?.rendering?.filters?.OutlineOverlayFilter;
   const highlighted = token.layer?.highlightObjects ?? globalThis.canvas?.tokens?.highlightObjects;
   const active = !SUSPENDED_VISUALS.has(token) && config.enabled && config.selectionOutline
     && !token.document?.isSecret && (token.controlled || token.hover || highlighted)
     && !token.destroyed && token.visible !== false && mesh && !mesh.destroyed;
   let state = OUTLINES.get(token);
-  if (!active || !Filter) { clearTokenOutline(token); return; }
+  if (!active) { clearTokenOutline(token); return; }
   if (state?.mesh !== mesh || state?.border !== token.border) { clearTokenOutline(token); state = null; }
   if (!state) {
-    const filter = Filter.create({ knockout: false, wave: false });
-    filter.animated = false;
-    filter.thickness = 3;
+    const filter = createTokenOutlineFilter();
+    if (!filter) { clearTokenOutline(token); return; }
     state = { mesh, filter, border: token.border, borderRenderable: token.border?.renderable ?? true };
     OUTLINES.set(token, state);
   }
